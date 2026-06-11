@@ -57,15 +57,15 @@ The architecture should later support:
 
 ## Current stage
 
-Stage 2 added a guarded read-only Kalshi Demo market-data client for public
-market metadata and market orderbooks. The client is tested with local fixtures
-and mocked HTTP transport.
+Stage 3 added deterministic offline research infrastructure: market-data
+snapshot models, Decimal-safe JSONL persistence, fixture-to-snapshot recording,
+and replay metrics over snapshot files.
 
 ## Next stage
 
-Stage 3 should implement a local replay simulator and data recorder. It must
-remain local and deterministic first, avoid execution actions, avoid strategy
-optimization, and document data/output limitations.
+Stage 4 should add a fair-value and quote engine dry-run. It must consume
+normalized/replayed books, emit dry-run quote objects only, avoid order
+placement, avoid strategy optimization claims, and document assumptions.
 
 ## Acceptance standards
 

@@ -57,6 +57,10 @@ For staged project work, read `docs/current_handoff.md` and `docs/repo_map.md` b
 - The Stage 2 read-only client lives at
   `src/edmn_trader/adapters/kalshi/client.py`; tests use `httpx.MockTransport`
   in `tests/test_kalshi_client.py` and local fixtures under `tests/fixtures/`.
+- The Stage 3 offline data layer lives under `src/edmn_trader/data/`; scripts
+  are `scripts/02_record_fixture_snapshots.py` and
+  `scripts/03_replay_snapshots.py`. Replay is strict by default and sorts only
+  when `--no-strict` is explicitly requested.
 
 ## Verification
 

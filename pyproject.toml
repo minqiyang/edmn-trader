@@ -22,6 +22,8 @@ dev = [
 
 [project.scripts]
 edmn-replay-orderbook-fixture = "edmn_trader.scripts.replay_orderbook_fixture:main"
+edmn-record-fixture-snapshots = "edmn_trader.scripts.record_fixture_snapshots:main"
+edmn-replay-snapshots = "edmn_trader.scripts.replay_snapshots:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

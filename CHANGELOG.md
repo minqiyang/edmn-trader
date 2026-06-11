@@ -6,9 +6,39 @@ numbers while the repository is still in early research scaffolding.
 
 ## Unreleased
 
-- Stage 3 is expected to add a local replay simulator and data recorder.
-- Order placement, WebSocket ingestion, strategies, and production trading
-  remain out of scope until separately reviewed.
+- Stage 4 is expected to add a fair-value and quote engine dry-run.
+- Order placement, WebSocket ingestion, production trading, and profitability
+  claims remain out of scope until separately reviewed.
+
+## Stage 3 - Local replay simulator and read-only data recorder - 2026-06-11
+
+### Added
+
+- Offline `MarketDataSnapshot` model for recorded market/orderbook data with
+  exchange, ticker, observed timestamp, local recorded timestamp, source type,
+  schema version, normalized orderbook, optional raw payload, notes, and tags.
+- Decimal-safe JSONL read/write/append helpers for deterministic snapshot
+  storage.
+- Replay session and cursor metrics for best bid, best ask, spread, mid, depth,
+  and level counts.
+- Local fixture-to-snapshot recorder script and JSONL replay summary script.
+- Offline tests for JSONL roundtrip, Decimal precision, malformed JSONL,
+  append behavior, strict replay ordering, replay metrics, and fixture
+  conversion.
+
+### Safety
+
+- Snapshot validation rejects raw payload keys that look like credentials,
+  headers, signatures, tokens, or secrets.
+- No network calls, order placement, WebSocket ingestion, strategy
+  optimization, production endpoint, or live trading path.
+
+### Validation
+
+- Required checks include `pytest`, `ruff check .`,
+  `python scripts/01_replay_orderbook_fixture.py`,
+  `python scripts/02_record_fixture_snapshots.py --output /tmp/edmn_stage3_snapshots.jsonl`,
+  and `python scripts/03_replay_snapshots.py --input /tmp/edmn_stage3_snapshots.jsonl`.
 
 ## Stage 2 - Read-only Kalshi Demo market-data client - 2026-06-11
 

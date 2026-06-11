@@ -68,3 +68,12 @@ restricted to the configured Kalshi Demo REST base URL.
 Rationale: injectable transport keeps tests deterministic and network-free while
 still exercising realistic HTTP request construction, status handling, JSON
 decoding, and response validation.
+
+## 2026-06-11: Store offline snapshots as Decimal-safe JSONL
+
+Decision: use append-friendly JSONL snapshot files with Decimal values
+serialized as strings and strict replay ordered by observed timestamp.
+
+Rationale: future research stages need deterministic, inspectable, and
+replayable market-data inputs that preserve price and quantity precision without
+depending on live API state.

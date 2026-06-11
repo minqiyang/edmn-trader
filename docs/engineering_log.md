@@ -64,6 +64,25 @@ The main tradeoff was adding a real HTTP dependency before live API use. That
 is acceptable here because the dependency is exercised through mocked tests and
 establishes the client seam needed for later optional live-read smoke checks.
 
+## Stage 3 offline snapshots and replay
+
+Stage 3 added deterministic offline infrastructure so future quote engines,
+strategy tests, and PnL attribution can work from replayable market-data
+snapshots instead of live API calls. The new snapshot format records the
+exchange, ticker, observed timestamp, local recorded timestamp, source type,
+schema version, normalized orderbook, optional raw payload, notes, and tags.
+
+The project uses JSONL because it is simple to append, inspect, diff, and stream
+one record at a time. Decimal values are serialized as strings so price and
+quantity precision survives roundtrips. Replay strict mode fails on
+out-of-order observed timestamps by default; non-strict mode can sort and warn
+for exploratory use.
+
+The main tradeoff was keeping replay limited to book metrics. There is no fill
+simulation, no strategy loop, and no execution action. That preserves Stage 3 as
+an offline data layer and leaves quote generation, simulation assumptions, and
+PnL attribution for later stages.
+
 ## Interview narrative
 
 A concise way to explain the current project:
@@ -73,4 +92,6 @@ A concise way to explain the current project:
 > normalized Kalshi-style YES/NO books into a canonical bid/ask representation.
 > I then added a long-running project control layer and a guarded read-only Demo
 > market-data client with mocked tests, keeping execution and strategy work out
-> of scope until the risk and simulation layers are ready.
+> of scope. Next, I added Decimal-safe snapshot JSONL and deterministic replay
+> metrics so later quote engines and reports can run from reproducible offline
+> data instead of live API state.

@@ -62,11 +62,14 @@ no strategies, and no production endpoints.
 Purpose: simulate market-data replay and prepare local data capture workflows
 for research.
 
-Deliverables: replay loop, recorder interface, local storage format, fixture
-coverage, and limitation notes.
+Deliverables: snapshot model, Decimal-safe JSONL read/write/append helpers,
+replay session, local fixture-to-snapshot recorder, snapshot replay summary
+script, fixture coverage, and limitation notes.
 
-Acceptance checks: deterministic replay tests pass, data output format is
-documented, and no execution actions are possible.
+Acceptance checks: deterministic replay tests pass, JSONL roundtrip preserves
+Decimal precision, strict mode rejects out-of-order timestamps, fixture
+conversion works offline, data output format is documented, and no execution
+actions are possible.
 
 Explicit non-goals: no live trading, no strategy optimization, no hidden network
 dependencies, and no unsupported data redistribution.
