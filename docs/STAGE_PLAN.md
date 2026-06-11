@@ -59,20 +59,75 @@ no strategies, and no production endpoints.
 
 ## Stage 3: Local replay simulator and data recorder
 
-Purpose: simulate market-data replay and prepare local data capture workflows
-for research.
+Purpose: build deterministic offline research infrastructure so future quote
+engines, strategy tests, and PnL attribution can run on replayable snapshots
+instead of live API calls.
 
 Deliverables: snapshot model, Decimal-safe JSONL read/write/append helpers,
 replay session, local fixture-to-snapshot recorder, snapshot replay summary
 script, fixture coverage, and limitation notes.
 
-Acceptance checks: deterministic replay tests pass, JSONL roundtrip preserves
-Decimal precision, strict mode rejects out-of-order timestamps, fixture
-conversion works offline, data output format is documented, and no execution
-actions are possible.
+Snapshot schema requirements:
+
+- `schema_version`.
+- `exchange`.
+- `ticker`.
+- observed market-data timestamp.
+- local recorded timestamp.
+- normalized orderbook.
+- source type.
+- optional raw payload.
+- optional notes and tags.
+- no credentials, headers, signatures, tokens, private keys, or secrets.
+
+Recorder requirements:
+
+- Store snapshots as JSONL.
+- Preserve `Decimal` price and quantity precision across roundtrips.
+- Support write and append behavior.
+- Use local fixtures only for fixture conversion.
+- Do not commit large generated snapshot files.
+
+Replay requirements:
+
+- Load JSONL snapshots deterministically.
+- Strict mode fails on out-of-order observed timestamps.
+- Non-strict mode may sort out-of-order snapshots and warn.
+- Expose best bid, best ask, spread, mid, bid depth, ask depth, bid level count,
+  and ask level count.
+- Do not add fill simulation in this stage.
+
+Required scripts:
+
+- `scripts/02_record_fixture_snapshots.py --output <path>` converts committed
+  local Kalshi fixtures into JSONL snapshots.
+- `scripts/03_replay_snapshots.py --input <path>` reads JSONL snapshots and
+  prints a concise metrics table.
+
+Acceptance checks: offline deterministic tests cover JSONL roundtrip, Decimal
+precision, malformed JSONL, append behavior, strict replay ordering, replay
+metrics, and fixture-to-snapshot conversion. Data output format is documented
+and no execution actions are possible.
+
+Validation commands:
+
+```bash
+python -m pip install -e ".[dev]"
+pytest
+ruff check .
+python scripts/01_replay_orderbook_fixture.py
+python scripts/02_record_fixture_snapshots.py --output /tmp/edmn_stage3_snapshots.jsonl
+python scripts/03_replay_snapshots.py --input /tmp/edmn_stage3_snapshots.jsonl
+```
 
 Explicit non-goals: no live trading, no strategy optimization, no hidden network
-dependencies, and no unsupported data redistribution.
+dependencies, no order placement, no authenticated trading, no production
+endpoint, no WebSocket, no profitability claims, no secrets, no fill simulation,
+and no unsupported data redistribution.
+
+Next-stage boundary: Stage 4 may consume normalized/replayed books to produce
+fair-value and dry-run quote objects only. It must not add order placement,
+fill simulation, production endpoints, or live trading.
 
 ## Stage 4: Fair-value and quote engine dry-run
 

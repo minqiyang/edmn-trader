@@ -13,6 +13,13 @@ and deterministic offline replay metrics.
 
 Stage 3: Local replay simulator and read-only data recorder.
 
+## Stage plan status
+
+`docs/STAGE_PLAN.md` now contains the full Stage 3 specification: snapshot
+schema requirements, Decimal-safe JSONL recorder requirements, deterministic
+replay behavior, fixture recording and replay scripts, offline tests,
+out-of-scope boundaries, validation commands, and the Stage 4 boundary.
+
 ## Important files
 
 - `AGENTS.md`: repo rules and first-read instructions.
@@ -92,4 +99,4 @@ claims, or live trading.
 
 ## Last updated timestamp
 
-2026-06-11 14:42:24 -07:00
+2026-06-11 15:33:11 -07:00
