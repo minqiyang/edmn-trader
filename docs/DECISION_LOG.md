@@ -1,0 +1,61 @@
+# Decision Log
+
+## 2026-06-10: Use demo-first architecture
+
+Decision: build the project around demo, paper, simulation, and research
+workflows before any execution work.
+
+Rationale: trading-system quality depends on safe boundaries, reproducibility,
+and risk checks before market access.
+
+## 2026-06-10: Reject guaranteed-profit framing
+
+Decision: state clearly that the project is not a guaranteed-profit trading bot.
+
+Rationale: event-driven trading faces fees, adverse selection, liquidity,
+latency, and compliance constraints. The repository should demonstrate
+engineering quality, not promise outcomes.
+
+## 2026-06-10: Start with Kalshi-style binary markets
+
+Decision: use Kalshi-style binary prediction markets as the first target.
+
+Rationale: the market structure creates a concrete and explainable orderbook
+normalization problem while keeping the first external target in a demo context.
+
+## 2026-06-10: Normalize YES/NO orderbooks before strategy work
+
+Decision: implement canonical YES-side orderbook normalization before fair
+value, quote generation, simulation, or strategy work.
+
+Rationale: downstream trading logic should consume one trusted data shape rather
+than duplicate venue-specific assumptions.
+
+## 2026-06-10: Keep exchange-specific code in adapters
+
+Decision: keep Kalshi-specific logic under `src/edmn_trader/adapters/kalshi`.
+
+Rationale: the core workflow should stay portable to future prediction-market
+and equities research adapters.
+
+## 2026-06-10: Use Decimal for prices and quantities
+
+Decision: use `Decimal` for prices, quantities, cash, fees, and PnL.
+
+Rationale: financial math should avoid binary floating-point surprises and
+preserve fixture precision.
+
+## 2026-06-10: Disable live trading by default
+
+Decision: expose `LIVE_DISABLED` as the only live-related execution mode.
+
+Rationale: future execution work must be explicitly staged, risk-gated, logged,
+and tested before it can act.
+
+## 2026-06-11: Add long-running handoff files before API expansion
+
+Decision: add project memory, handoff, repo map, stage plan, and controller docs
+before implementing the Kalshi Demo REST client.
+
+Rationale: future Codex sessions need compact, durable context and stop gates
+before the project touches networked market-data workflows.

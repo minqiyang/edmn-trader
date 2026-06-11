@@ -1,0 +1,117 @@
+# event-driven-market-neutral-trader
+
+`event-driven-market-neutral-trader` is a demo-first, risk-controlled trading
+research platform for event-driven prediction markets. The first integration
+target is Kalshi-style binary contracts, with a core architecture intended to
+remain portable across future market-data and research adapters.
+
+The project is designed for simulation, execution safety, and workflow
+engineering. It is not a guaranteed-profit trading bot, and it intentionally
+rejects that framing. Market making and event-driven trading involve adverse
+selection, fees, latency, incomplete information, fill uncertainty, liquidity
+constraints, and compliance boundaries. The purpose of this repository is to
+demonstrate professional system design, not to promise trading outcomes.
+
+## Why orderbook normalization comes first
+
+Prediction-market venues do not always expose orderbooks in the same shape as
+traditional equities or futures markets. Kalshi-style binary orderbooks expose
+YES bids and NO bids rather than direct YES asks. Before quoting, simulation,
+risk checks, or PnL attribution can be trusted, the venue-specific book must be
+converted into a canonical YES-side bid/ask representation:
+
+```text
+best_yes_bid = max(yes_dollars)
+implied_yes_ask = 1 - max(no_dollars)
+yes_spread = implied_yes_ask - best_yes_bid
+yes_mid = (best_yes_bid + implied_yes_ask) / 2
+```
+
+That normalization layer is the first implemented adapter boundary in this
+repo. It is covered by deterministic local-fixture tests and does not require
+credentials or live API access.
+
+## Why Kalshi Demo is first
+
+Kalshi Demo is the initial integration target because it provides a realistic
+prediction-market API shape while keeping the first external workflow in a
+non-production environment. The configured demo REST base URL is:
+
+```text
+https://external-api.demo.kalshi.co/trade-api/v2
+```
+
+The demo WebSocket endpoint is documented for later stages, but WebSocket
+support is intentionally not implemented in the current foundation:
+
+```text
+wss://external-api-ws.demo.kalshi.co/trade-api/ws/v2
+```
+
+## Live trading is disabled by default
+
+The only live-related execution mode in the core model is `LIVE_DISABLED`.
+There is no production order-placement path in this stage. Any future execution
+work must be separately reviewed, must pass through a risk engine, must be
+covered by tests, and must comply with venue rules and applicable regulations.
+
+## Extensibility
+
+The core package keeps trading-domain models exchange-agnostic, while
+venue-specific parsing lives under `src/edmn_trader/adapters`. That boundary is
+intended to support later research extensions such as:
+
+- Polymarket US market-data adapters, without implementing Polymarket trading.
+- U.S. equities research adapters, without implementing live equities trading.
+- Backtests and simulations with explicit fees, slippage, fill assumptions, and
+  limitations.
+
+## Local setup
+
+Use Python 3.12.
+
+```bash
+python -m pip install -e ".[dev]"
+pytest
+ruff check .
+```
+
+Replay the included local Kalshi-style fixture:
+
+```bash
+python scripts/01_replay_orderbook_fixture.py
+```
+
+The replay script prints the canonical YES-side best bid, implied ask, spread,
+mid, and aggregate bid/ask depth.
+
+## Project workflow and logs
+
+Long-running project continuity is tracked in:
+
+- `PROJECT_SPEC.md`
+- `CHANGELOG.md`
+- `docs/current_handoff.md`
+- `docs/repo_map.md`
+- `docs/codex_long_running_controller.md`
+- `docs/STAGE_PLAN.md`
+- `docs/DECISION_LOG.md`
+- `docs/engineering_log.md`
+
+## Current scope
+
+Implemented:
+
+- Initial Python package and documentation foundation.
+- Exchange-agnostic core dataclasses using `Decimal`.
+- Kalshi fixed-point orderbook normalization from local fixtures.
+- Unit tests for normal conversion, empty sides, multiple levels, precision,
+  invalid prices, and locked or crossed book detection.
+
+Not implemented:
+
+- Authenticated Kalshi requests.
+- Order placement.
+- WebSocket ingestion.
+- Strategy optimization.
+- Production trading.
