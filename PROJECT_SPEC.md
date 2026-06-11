@@ -57,15 +57,15 @@ The architecture should later support:
 
 ## Current stage
 
-Stage 1.5 adds the long-running controller and project memory layer. It creates
-the documentation structure needed for safe continuation across sessions,
-branches, machines, and future `/goal` runs.
+Stage 2 added a guarded read-only Kalshi Demo market-data client for public
+market metadata and market orderbooks. The client is tested with local fixtures
+and mocked HTTP transport.
 
 ## Next stage
 
-Stage 2 should implement a read-only Kalshi Demo market-data client. It must
-start with local fixtures and tests, avoid order placement, avoid WebSocket
-ingestion, avoid strategies, and avoid storing credentials.
+Stage 3 should implement a local replay simulator and data recorder. It must
+remain local and deterministic first, avoid execution actions, avoid strategy
+optimization, and document data/output limitations.
 
 ## Acceptance standards
 

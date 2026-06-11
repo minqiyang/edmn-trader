@@ -6,10 +6,31 @@ numbers while the repository is still in early research scaffolding.
 
 ## Unreleased
 
-- Stage 2 is expected to add a read-only Kalshi Demo market-data client after
-  local fixtures and parsing tests are in place.
-- Authenticated requests, order placement, WebSocket ingestion, strategies, and
-  production trading remain out of scope until separately reviewed.
+- Stage 3 is expected to add a local replay simulator and data recorder.
+- Order placement, WebSocket ingestion, strategies, and production trading
+  remain out of scope until separately reviewed.
+
+## Stage 2 - Read-only Kalshi Demo market-data client - 2026-06-11
+
+### Added
+
+- Guarded `httpx`-based Kalshi Demo REST client for public read-only market
+  metadata and market orderbook endpoints.
+- Demo-only base URL guard using
+  `https://external-api.demo.kalshi.co/trade-api/v2`.
+- Local response fixtures and mocked HTTP tests for markets, orderbooks,
+  normalized orderbook output, HTTP status failures, transport failures,
+  malformed JSON, malformed response shapes, and empty orderbooks.
+
+### Safety
+
+- No credentials, authentication headers, order placement, WebSocket ingestion,
+  strategy logic, production endpoint, or live trading path.
+
+### Validation
+
+- Required checks remain `pytest`, `ruff check .`, and
+  `python scripts/01_replay_orderbook_fixture.py`.
 
 ## Stage 1.5 - Long-running controller and project memory - 2026-06-11
 

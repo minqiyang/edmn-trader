@@ -24,8 +24,9 @@ context, then read only the files needed for the requested stage. Use `rg` and
   changes.
 - `README.md`: public project overview, setup, scope, and workflow links. Read
   when changing user-facing positioning.
-- `pyproject.toml`: Python package, pytest, and Ruff configuration. Read when
-  changing dependencies, tooling, package layout, or entry points.
+- `pyproject.toml`: Python package, runtime dependencies, pytest, and Ruff
+  configuration. Read when changing dependencies, tooling, package layout, or
+  entry points.
 - `.env.example`: non-secret local defaults. Read when environment variables
   are relevant.
 
@@ -52,6 +53,9 @@ context, then read only the files needed for the requested stage. Use `rg` and
 
 - `src/edmn_trader/core/models.py`: exchange-agnostic dataclasses and
   `ExecutionMode`. Read when changing core trading concepts.
+- `src/edmn_trader/adapters/kalshi/client.py`: guarded read-only Kalshi Demo
+  REST client for public markets and orderbooks. Read for Stage 2 client
+  behavior, error handling, or endpoint path changes.
 - `src/edmn_trader/adapters/kalshi/orderbook.py`: Kalshi fixed-point
   orderbook normalizer. Read for Kalshi orderbook parsing only.
 - `src/edmn_trader/scripts/replay_orderbook_fixture.py`: importable fixture
@@ -66,9 +70,15 @@ context, then read only the files needed for the requested stage. Use `rg` and
 ## Tests and fixtures
 
 - `tests/test_core_models.py`: execution-mode and core safety checks.
+- `tests/test_kalshi_client.py`: mocked HTTP tests for the guarded read-only
+  Kalshi Demo REST client.
 - `tests/test_kalshi_orderbook.py`: deterministic normalizer coverage.
 - `tests/fixtures/kalshi_orderbook_fp_basic.json`: basic local Kalshi-style
   fixture used by the replay script.
+- `tests/fixtures/kalshi_markets_response.json`: local markets response fixture
+  for Stage 2 client tests.
+- `tests/fixtures/kalshi_orderbook_response.json`: local orderbook response
+  fixture for Stage 2 client tests.
 
 ## Project Skill
 

@@ -46,6 +46,24 @@ same constraints or might accidentally exceed the stage boundary.
 - Initialized Git locally because the folder was not yet a repository, but did
   not add a remote or push.
 
+## Stage 2 read-only market-data client
+
+Stage 2 added a narrow Kalshi Demo REST client for public market metadata and
+market orderbooks. The client uses `httpx` with injectable transport so tests
+can mock every HTTP response and avoid network access, credentials, and
+environment assumptions. The default and only accepted base URL is the Kalshi
+Demo REST base URL documented for this project.
+
+The client deliberately exposes only read-only market and orderbook methods.
+It does not include authentication, order placement, WebSocket subscriptions,
+strategy hooks, or production endpoint configuration. Error handling is explicit
+for HTTP status failures, transport failures, malformed JSON, malformed response
+shape, and empty orderbooks.
+
+The main tradeoff was adding a real HTTP dependency before live API use. That
+is acceptable here because the dependency is exercised through mocked tests and
+establishes the client seam needed for later optional live-read smoke checks.
+
 ## Interview narrative
 
 A concise way to explain the current project:
@@ -53,5 +71,6 @@ A concise way to explain the current project:
 > I built the project from the safety boundary inward. First I defined the
 > non-goals and risk constraints, then I modeled a venue-agnostic orderbook and
 > normalized Kalshi-style YES/NO books into a canonical bid/ask representation.
-> Before expanding to API clients or strategies, I added a long-running project
-> control layer so future work remains staged, testable, and auditable.
+> I then added a long-running project control layer and a guarded read-only Demo
+> market-data client with mocked tests, keeping execution and strategy work out
+> of scope until the risk and simulation layers are ready.

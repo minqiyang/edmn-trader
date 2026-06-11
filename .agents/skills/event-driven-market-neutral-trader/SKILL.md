@@ -54,6 +54,9 @@ For staged project work, read `docs/current_handoff.md` and `docs/repo_map.md` b
 - The Stage 1 fixture replay path is `scripts/01_replay_orderbook_fixture.py`,
   backed by `tests/fixtures/kalshi_orderbook_fp_basic.json` and the importable
   entry point `edmn_trader.scripts.replay_orderbook_fixture:main`.
+- The Stage 2 read-only client lives at
+  `src/edmn_trader/adapters/kalshi/client.py`; tests use `httpx.MockTransport`
+  in `tests/test_kalshi_client.py` and local fixtures under `tests/fixtures/`.
 
 ## Verification
 

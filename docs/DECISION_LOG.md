@@ -59,3 +59,12 @@ before implementing the Kalshi Demo REST client.
 
 Rationale: future Codex sessions need compact, durable context and stop gates
 before the project touches networked market-data workflows.
+
+## 2026-06-11: Use injectable httpx client for read-only Kalshi Demo REST
+
+Decision: implement Stage 2 with `httpx.Client` and injectable transport,
+restricted to the configured Kalshi Demo REST base URL.
+
+Rationale: injectable transport keeps tests deterministic and network-free while
+still exercising realistic HTTP request construction, status handling, JSON
+decoding, and response validation.

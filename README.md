@@ -105,8 +105,11 @@ Implemented:
 - Initial Python package and documentation foundation.
 - Exchange-agnostic core dataclasses using `Decimal`.
 - Kalshi fixed-point orderbook normalization from local fixtures.
+- Guarded read-only Kalshi Demo REST client for public markets and orderbooks,
+  tested with mocked HTTP transport.
 - Unit tests for normal conversion, empty sides, multiple levels, precision,
-  invalid prices, and locked or crossed book detection.
+  invalid prices, locked or crossed book detection, client response validation,
+  and client error handling.
 
 Not implemented:
 

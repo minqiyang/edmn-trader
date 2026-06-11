@@ -1,0 +1,13 @@
+{
+  "markets": [
+    {
+      "ticker": "DEMO-EVENT-MARKET",
+      "event_ticker": "DEMO-EVENT",
+      "market_type": "binary",
+      "title": "Demo event market",
+      "subtitle": "Local fixture only",
+      "status": "open"
+    }
+  ],
+  "cursor": ""
+}
