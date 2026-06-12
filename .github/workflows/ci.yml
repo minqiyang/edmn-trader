@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Validate
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install package
+        run: python -m pip install -e ".[dev]"
+
+      - name: Run tests
+        run: pytest
+
+      - name: Run lint
+        run: ruff check .
+
+      - name: Replay orderbook fixture
+        run: python scripts/01_replay_orderbook_fixture.py
+
+      - name: Record fixture snapshots
+        run: python scripts/02_record_fixture_snapshots.py --output /tmp/edmn_ci_snapshots.jsonl
+
+      - name: Replay snapshots
+        run: python scripts/03_replay_snapshots.py --input /tmp/edmn_ci_snapshots.jsonl
+
+      - name: Run quote replay dry run
+        run: python scripts/04_quote_replay_dry_run.py --input /tmp/edmn_ci_snapshots.jsonl
