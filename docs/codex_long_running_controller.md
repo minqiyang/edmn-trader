@@ -29,6 +29,32 @@ demo-first, risk-controlled stage plan.
 - For documentation-only stages, do not touch behavior unless required by a
   failing check.
 
+## Conservative auto-merge policy
+
+Codex may not direct-merge to `main`, bypass branch protection, or use admin
+override.
+
+Codex may create a pull request and enable GitHub auto-merge only for low-risk
+small PRs. A low-risk small PR must be narrow, in scope, fully validated
+locally, and free of credentials, production endpoints, order placement,
+WebSocket work, strategy optimization, large generated files, dependency
+surprises, and compliance ambiguity.
+
+When required GitHub checks or reviews are pending, Codex may enable auto-merge
+only if the PR is low-risk and branch protection is clear. GitHub must perform
+the final merge only after all required checks and reviews pass.
+
+Codex must not enable auto-merge, and must stop for human review, when any of
+these apply:
+
+- no required checks are configured;
+- branch protection is absent or unclear;
+- merge conflicts exist;
+- CI is failing;
+- scope is unclear;
+- the change is medium or high risk;
+- human judgment is needed.
+
 ## Stop gates
 
 Stop and report clearly when any of these occur:
@@ -42,6 +68,8 @@ Stop and report clearly when any of these occur:
 - Destructive command.
 - Live or production trading request.
 - Unclear compliance boundary.
+- Auto-merge is requested but the PR is not clearly low-risk, protected, and
+  locally validated.
 - Completion of one stage-sized change.
 
 ## Required checks
@@ -91,11 +119,15 @@ Return:
 - Checks run and results.
 - Any issues or assumptions.
 - Exact recommended next prompt.
+- Risk classification.
+- Auto-merge status.
 
 ## What not to do
 
 - Do not make profitability claims.
 - Do not add credentials or secrets.
+- Do not direct-merge to `main`, bypass branch protection, or use admin
+  override.
 - Do not implement authenticated Kalshi requests before the read-only client
   stage is explicitly requested.
 - Do not implement order placement, WebSocket ingestion, strategies, or

@@ -29,6 +29,13 @@ For future Codex runs, read these before broad exploration:
 Use targeted reads after that. Do not dump the whole repository into context
 unless the task truly requires it.
 
+## PR and merge policy
+
+Use `docs/codex_long_running_controller.md` for PR workflow rules. Codex must
+not direct-merge to `main`, bypass branch protection, or use admin override.
+GitHub auto-merge may be enabled only for clearly low-risk small PRs that meet
+the controller policy.
+
 ## Continuity docs
 
 - `PROJECT_SPEC.md`: stable product and technical spec.

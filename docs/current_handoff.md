@@ -88,6 +88,16 @@ python -m pip install -e ".[dev]"
 - Quote dry-runs emit non-executable intents only. No fill simulation,
   execution engine, WebSocket ingestion, or production trading path exists.
 
+## PR workflow policy
+
+`docs/codex_long_running_controller.md` now contains a conservative auto-merge
+policy: no direct merges to `main`, no branch-protection bypass or admin
+override, and GitHub auto-merge only for clearly low-risk small PRs that are
+narrow, locally validated, protected by required checks/reviews, and free of
+credentials, production endpoints, order placement, WebSocket work, strategy
+optimization, large generated files, dependency surprises, or compliance
+ambiguity.
+
 ## Safety boundaries
 
 - Do not add credentials or secrets.
@@ -115,4 +125,4 @@ Do not implement code during the readiness check.
 
 ## Last updated timestamp
 
-2026-06-11 17:16:24 -07:00
+2026-06-11 17:21:26 -07:00
