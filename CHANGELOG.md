@@ -10,6 +10,9 @@ numbers while the repository is still in early research scaffolding.
   market-maker workflow, including dry-run defaults, explicit demo opt-in,
   Stage 5 risk-gate reuse, structured JSONL logs, run summaries, offline tests,
   validation commands, and out-of-scope boundaries.
+- Tightened Stage 6 readiness requirements for quote lifecycle decisions,
+  replace/cancel/hold intents, max open orders, max notional, max loss, and
+  kill-switch controls.
 - Order placement beyond explicitly risk-gated demo smoke tests, WebSocket
   ingestion, production trading, and profitability claims remain out of scope
   until separately reviewed.
