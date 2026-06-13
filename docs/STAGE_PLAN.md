@@ -474,6 +474,15 @@ Inventory and quoting requirements:
 - Apply bounded inventory-aware quote skew through the Stage 4 quote engine.
 - Respect binary price bounds, tick-size behavior, minimum spread, and
   configured quote size.
+- Maintain an explicit in-memory open-quote state for the finite replay run so
+  desired quote candidates can be compared with prior quote state.
+- Quote lifecycle decisions must be explicit: generate desired quote
+  candidates, compare them with current open quote state, then emit
+  place/replace/cancel/hold intents for audit and risk review.
+- Replace and cancel intents must remain intent records until they pass the
+  Stage 5 risk gate; dry-run mode must never call an adapter.
+- Quote churn controls must be deterministic, such as minimum price-change or
+  quote-change thresholds before replacement intents are emitted.
 - Avoid aggressive liquidity behavior; no quote stuffing, spoofing-like
   behavior, self-trading, wash trading, or misleading liquidity.
 
@@ -481,6 +490,14 @@ Risk and execution-gate requirements:
 
 - Every candidate action must pass through the Stage 5 risk decision before any
   adapter method can run.
+- Stage 6 must add or configure explicit run-level controls for maximum
+  absolute position, maximum open orders, maximum notional exposure, maximum
+  loss, and a kill switch.
+- The kill switch must block new place/replace actions, prevent adapter access,
+  and log skipped or cancel-intent decisions deterministically.
+- The maximum open-orders limit must count both sides of the maintained
+  open-quote state and reject or skip additional quote intents when the limit
+  would be exceeded.
 - `LIVE_DISABLED`, non-demo endpoints, missing demo opt-in, price-boundary,
   size, notional, position, inventory, and daily-loss checks must remain
   enforced.
@@ -518,6 +535,10 @@ Offline deterministic tests:
   approval.
 - Missing demo opt-in, `LIVE_DISABLED`, non-demo endpoint, and failed risk
   limits block adapter access and are logged.
+- Quote lifecycle tests cover generate, compare, place-intent, replace-intent,
+  cancel-intent, hold, and audit-log output.
+- Maximum position, maximum open orders, maximum notional, maximum loss, and
+  kill-switch controls block unsafe intents deterministically.
 - Inventory skew changes quote candidates deterministically.
 - Run summaries count frames, quotes, approvals, rejections, skipped actions,
   and adapter calls.

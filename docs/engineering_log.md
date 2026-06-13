@@ -137,6 +137,13 @@ submissions, but it must not infer fills, PnL, profitability, or production
 readiness. That keeps Stage 7 responsible for attribution and research
 reporting assumptions.
 
+A follow-up readiness audit tightened the Stage 6 specification around quote
+lifecycle and risk controls. The implementation checkpoint must model open
+quote state, compare desired quotes with prior quotes, emit place, replace,
+cancel, or hold intents, and audit those decisions before any adapter access.
+It also must enforce max position, max open orders, max notional exposure, max
+loss, and a kill switch in deterministic offline tests.
+
 ## Interview narrative
 
 A concise way to explain the current project:

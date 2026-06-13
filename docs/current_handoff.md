@@ -40,8 +40,9 @@ Stage 6 boundary.
 `docs/STAGE_PLAN.md` now contains the full Stage 6 specification: finite
 replay-driven dry-run/demo workflow behavior, inventory-aware quoting
 requirements, Stage 5 risk-gate reuse, structured JSONL logging and run summary
-requirements, offline tests, validation commands, explicit non-goals, and the
-Stage 7 boundary.
+requirements, explicit quote lifecycle handling, max-position/max-open-orders/
+max-notional/max-loss/kill-switch controls, offline tests, validation commands,
+explicit non-goals, and the Stage 7 boundary.
 
 ## Important files
 
@@ -168,4 +169,4 @@ during the readiness check.
 
 ## Last updated timestamp
 
-2026-06-12 17:51:01 -07:00
+2026-06-12 18:02:57 -07:00
