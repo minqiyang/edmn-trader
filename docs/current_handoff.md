@@ -93,6 +93,7 @@ python scripts/02_record_fixture_snapshots.py --output /tmp/edmn_stage5_snapshot
 python scripts/03_replay_snapshots.py --input /tmp/edmn_stage5_snapshots.jsonl
 python scripts/04_quote_replay_dry_run.py --input /tmp/edmn_stage5_snapshots.jsonl
 python scripts/05_demo_execution_smoke.py --log-output /tmp/edmn_stage5_execution_smoke.jsonl
+python scripts/05_demo_execution_smoke.py --demo-opt-in --log-output /tmp/edmn_stage5_execution_smoke_approved.jsonl
 ```
 
 Optional environment validation:
@@ -106,9 +107,10 @@ python -m pip install -e ".[dev]"
 - GitHub remote `origin` is configured for
   `https://github.com/minqiyang/market-neutral-trading-research.git`; do not
   push unless the user explicitly asks or the active workflow requires it.
-- Local `main` and `origin/main` matched at
-  `3bdd691cad5858aa57dc3268e801ac4e6642cdce` before the Stage 5 branch was
-  created.
+- PR #1 merged Stage 5 into `main` at
+  `6cd1d536fa41e721a998f23eab19d7129938c3da`.
+- Local `main` was fast-forwarded to `origin/main` after the PR #1 merge, and
+  post-merge validation passed before this handoff update.
 - `.github/workflows/ci.yml` exists, and the latest observed GitHub Actions CI
   run on `main` completed successfully.
 - GitHub branch protection is enabled on `main` and requires the `Validate`
@@ -142,16 +144,15 @@ ambiguity.
 
 ## Next recommended stage
 
-Stage 6: Inventory-aware demo market maker in dry-run/demo only, after the
-Stage 5 PR is merged.
+Stage 6 readiness check, then Stage 6 implementation only after current GitHub
+state, CI, branch protection, and local validation are confirmed.
 
 ## Exact next prompt suggestion
 
-After the Stage 5 PR is merged, implement Stage 6 from `docs/STAGE_PLAN.md`:
-connect normalized books, fair value, quote generation, risk gates, and
-dry-run/demo loop behavior without production trading or broad strategy
-deployment.
+Use Codex Long Session Governance. Verify Stage 6 readiness from
+`docs/STAGE_PLAN.md`; confirm clean synced `main`, passing CI/local validation,
+and branch protection. Do not implement Stage 6.
 
 ## Last updated timestamp
 
-2026-06-12 14:10:41 -07:00
+2026-06-12 17:23:18 -07:00
