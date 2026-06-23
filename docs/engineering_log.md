@@ -164,6 +164,25 @@ instead of adding a daemon or live event loop. That gives Stage 7 enough audited
 state for attribution/reporting work while preserving the no-production,
 no-WebSocket, no-live-market-making boundary.
 
+## Stage 7 plan clarification
+
+The Stage 7 heading identified PnL attribution and research reporting as the
+next checkpoint, but the original text was too compact to implement safely. The
+clarified plan keeps Stage 7 offline and evidence-bound: reports may consume
+Stage 6 decision logs and optional local fill fixtures, but they must not infer
+fills from fake/demo adapter submissions.
+
+The core accounting boundary is explicit. Observed Stage 6 counts and supplied
+fill assumptions must be reported separately, and every fill, fee, mark,
+slippage, or adverse-selection calculation must be labeled as an assumption or
+approximation. Empty/no-fill runs still produce a report, but with zero supplied
+fills and zero realized PnL.
+
+The main tradeoff is postponing richer reporting and adapter work. Stage 7 is
+only allowed to prove deterministic offline attribution and disclosure hygiene;
+production endpoints, WebSockets, optimization, and profitability framing remain
+out of scope.
+
 ## Interview narrative
 
 A concise way to explain the current project:

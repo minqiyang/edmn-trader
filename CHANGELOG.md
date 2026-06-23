@@ -6,6 +6,11 @@ numbers while the repository is still in early research scaffolding.
 
 ## Unreleased
 
+- Clarified the Stage 7 plan for offline PnL attribution and research reports:
+  local Stage 6 logs as required input, explicit optional fill assumptions,
+  no fill inference from fake/demo submissions, Decimal-safe attribution,
+  Markdown report output, limitation notes, offline tests, and validation
+  commands.
 - Added Stage 6 finite market-maker replay workflow that consumes JSONL
   snapshots, generates inventory-aware quote candidates, compares them with
   in-memory open quote state, emits place/replace/cancel/hold lifecycle

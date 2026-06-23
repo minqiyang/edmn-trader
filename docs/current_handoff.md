@@ -49,6 +49,11 @@ Stage 6 is now implemented as a finite replay workflow. It remains dry-run by
 default, uses only fake-adapter demo submissions after explicit opt-in and risk
 approval, and does not infer fills, PnL, profitability, or production readiness.
 
+`docs/STAGE_PLAN.md` now contains the full Stage 7 specification: offline
+research report inputs, optional explicit fill assumptions, Decimal-safe
+attribution requirements, no-fill report behavior, Markdown report script,
+offline tests, validation commands, non-goals, and the Stage 8 boundary.
+
 ## Important files
 
 - `AGENTS.md`: repo rules and first-read instructions.
@@ -192,17 +197,19 @@ a stop gate is triggered.
 
 ## Next recommended stage
 
-Stage 7: PnL attribution and research reporting. Start only after reconfirming
+Stage 7 implementation: offline PnL attribution and research reporting from
+Stage 6 logs and optional explicit fill fixtures. Start only after reconfirming
 clean synced `main`, CI, branch protection, required `Validate` status, local
 validation, and whether the owner-direct fast path or PR path applies.
 
 ## Exact next prompt suggestion
 
-Use Codex Long Session Governance. Start Stage 7 planning from only the Stage 7
-section of `docs/STAGE_PLAN.md`; if the Stage 7 spec is incomplete, create a
-docs-only clarification checkpoint and stop. Do not add authenticated/live
-trading, WebSocket ingestion, production endpoints, or profitability claims.
+Use Codex Long Session Governance. Start Stage 7 implementation from only the
+Stage 7 section of `docs/STAGE_PLAN.md`; use TDD for behavior changes, keep the
+report workflow local/offline, do not infer fills from fake/demo submissions,
+and do not add authenticated/live trading, WebSocket ingestion, production
+endpoints, strategy optimization, or profitability claims.
 
 ## Last updated timestamp
 
-2026-06-22 22:13:11 -07:00
+2026-06-22 22:58:58 -07:00

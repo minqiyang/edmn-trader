@@ -614,6 +614,79 @@ fees/slippage/fill limitations, and avoid profitability guarantees.
 Explicit non-goals: no marketing claims, no cherry-picked conclusions, and no
 production trading.
 
+Scope: consume Stage 6 JSONL decision logs and, optionally, a separately
+provided local fill-assumption JSONL fixture. Stage 7 may compute hypothetical
+attribution only from explicit assumptions. It must never infer fills from
+accepted fake/demo adapter submissions.
+
+Input requirements:
+
+- Required input: one or more Stage 6 market-maker replay JSONL logs.
+- Optional input: a local fills/fees fixture with explicit instrument, side,
+  price, quantity, fee, observed timestamp, and assumption notes.
+- Inputs must be local files only; no network calls, API credentials, exchange
+  authentication, or private account data.
+- Missing fills must be reported as "no fills supplied"; do not synthesize or
+  backfill fills from quote candidates or adapter submissions.
+- Use `Decimal` for prices, quantities, fees, cash, notional, and PnL.
+
+Attribution requirements:
+
+- Separate observed Stage 6 counts from hypothetical attribution assumptions:
+  frames, quote candidates, risk approvals, rejections, skipped actions,
+  adapter submissions, adapter errors, supplied fills, fees, realized PnL,
+  inventory, and mark assumptions.
+- Attribute PnL components only when explicit input data supports them:
+  gross trade PnL, fees, net PnL, inventory change, quoted spread context, and
+  simple adverse-selection proxy versus replayed midpoint when available.
+- Reports must label all supplied fills, marks, slippage, and adverse-selection
+  calculations as assumptions or approximations.
+- Reports must avoid profitability guarantees, performance marketing, Sharpe
+  ratios, annualization, strategy optimization, ranking, or cherry-picked
+  conclusions.
+- Empty/no-fill runs must still produce a valid report showing zero supplied
+  fills, zero realized PnL, Stage 6 decision counts, and limitation notes.
+
+Required script:
+
+- Add a report script such as `scripts/07_research_report.py`.
+- Required input: `--market-maker-log <path>`; allow repeated inputs if simple.
+- Optional input: `--fills <fills.jsonl>`.
+- Required output option: `--output <path>` for a Markdown report.
+- Default behavior must be local/offline and must not call adapters or APIs.
+- The report must include limitation notes and must not claim production
+  readiness or profitability.
+
+Offline deterministic tests:
+
+- Report generation works for a Stage 6 log with no fills.
+- Supplied fill fixture produces deterministic gross/net PnL and fee totals.
+- Malformed or secret-like fill fields are rejected.
+- Missing fills are not inferred from adapter submissions.
+- Report text separates observed counts from assumptions and includes explicit
+  limitations.
+- Decimal precision is preserved in attribution outputs.
+- Tests remain offline and use local temporary JSONL/Markdown files only.
+
+Validation commands:
+
+```bash
+python -m pip install -e ".[dev]"
+pytest
+ruff check .
+python scripts/01_replay_orderbook_fixture.py
+python scripts/02_record_fixture_snapshots.py --output /tmp/edmn_stage7_snapshots.jsonl
+python scripts/06_market_maker_replay.py --input /tmp/edmn_stage7_snapshots.jsonl --log-output /tmp/edmn_stage7_market_maker.jsonl
+python scripts/06_market_maker_replay.py --input /tmp/edmn_stage7_snapshots.jsonl --demo-opt-in --log-output /tmp/edmn_stage7_market_maker_demo.jsonl
+python scripts/07_research_report.py --market-maker-log /tmp/edmn_stage7_market_maker.jsonl --output /tmp/edmn_stage7_report.md
+```
+
+Next-stage boundary: Stage 8 may add additional research data adapters or richer
+reporting only after Stage 7 proves offline attribution reports with explicit
+assumptions. Stage 7 must not add live trading, authenticated execution,
+production endpoints, WebSocket ingestion, strategy optimization, or
+profitability claims.
+
 ## Stage 8: Polymarket US market-data research adapter, if compliant and available
 
 Purpose: explore a second prediction-market data adapter for research only.
