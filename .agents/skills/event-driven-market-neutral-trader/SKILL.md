@@ -85,6 +85,11 @@ For staged project work, read `docs/current_handoff.md` and `docs/repo_map.md` b
   `scripts/07_research_report.py`. It consumes Stage 6 logs and optional
   explicit local fill fixtures only, rejects secret-like fill fields, and must
   not infer fills from adapter submissions or claim profitability.
+- The Stage 8 Polymarket US adapter lives under
+  `src/edmn_trader/adapters/polymarket_us/`. It must stay public-market-data
+  only, fixture-tested by default, restricted to the Polymarket US public base
+  URL, and free of international endpoints, auth, wallets, WebSockets, trading,
+  execution paths, and profitability claims.
 
 ## Verification
 

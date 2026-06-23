@@ -60,6 +60,10 @@ context, then read only the files needed for the requested stage. Use `rg` and
   behavior, error handling, or endpoint path changes.
 - `src/edmn_trader/adapters/kalshi/orderbook.py`: Kalshi fixed-point
   orderbook normalizer. Read for Kalshi orderbook parsing only.
+- `src/edmn_trader/adapters/polymarket_us/client.py`: guarded read-only
+  Polymarket US public market-data client.
+- `src/edmn_trader/adapters/polymarket_us/orderbook.py`: Polymarket US
+  market-book normalizer. Read for Stage 8 parsing only.
 - `src/edmn_trader/data/snapshots.py`: offline market-data snapshot model and
   snapshot JSONL persistence helpers. Read for recorded data schema changes.
 - `src/edmn_trader/data/jsonl.py`: Decimal-safe JSONL read/write/append helpers.
@@ -129,8 +133,12 @@ context, then read only the files needed for the requested stage. Use `rg` and
   run-control, adapter-error, and script-summary coverage.
 - `tests/test_research_report.py`: Stage 7 report generation, explicit fill
   attribution, secret-like fill field rejection, and CLI coverage.
+- `tests/test_polymarket_us_adapter.py`: Stage 8 Polymarket US fixture
+  normalization, guarded public client, and malformed-book coverage.
 - `tests/fixtures/kalshi_orderbook_fp_basic.json`: basic local Kalshi-style
   fixture used by the replay script.
+- `tests/fixtures/polymarket_us_market_book.json`: local Polymarket US
+  market-book fixture for Stage 8 adapter tests.
 - `tests/fixtures/kalshi_markets_response.json`: local markets response fixture
   for Stage 2 client tests.
 - `tests/fixtures/kalshi_orderbook_response.json`: local orderbook response

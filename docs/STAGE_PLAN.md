@@ -2,7 +2,7 @@
 
 ## Completed stage record
 
-These records summarize the locally completed stages through Stage 7. They are
+These records summarize the locally completed stages through Stage 8. They are
 intended as a durable audit map; implementation details remain in the source,
 tests, changelog, engineering log, and handoff archive.
 
@@ -193,6 +193,27 @@ tests, changelog, engineering log, and handoff archive.
   inference from fake/demo adapter submissions, no network calls, no
   authenticated execution, no production endpoints, no WebSocket ingestion, no
   strategy optimization, no secrets, and no profitability claim.
+
+### Stage 8: Polymarket US market-data research adapter
+
+- Status: complete.
+- Commit: pending on the Stage 8 implementation branch.
+- Purpose: prove a second prediction-market adapter can remain fixture-first,
+  public-market-data only, read-only, and exchange-contained.
+- Files/modules added: `src/edmn_trader/adapters/polymarket_us/client.py`,
+  `src/edmn_trader/adapters/polymarket_us/orderbook.py`,
+  `src/edmn_trader/adapters/polymarket_us/__init__.py`, local Polymarket US
+  market-book fixture, adapter tests, and readiness documentation.
+- Validation commands: `python -m pip install -e ".[dev]"`, `pytest`,
+  `ruff check .`, and `python scripts/01_replay_orderbook_fixture.py`.
+- Next-stage boundary: Stage 9 may add U.S. equities research data only after
+  Stage 8 remains read-only, fixture-tested, exchange-contained, and
+  compliance-bound.
+- Safety status: Polymarket US public market-data only, no international
+  Polymarket endpoints, no trading path, no wallet, no private key, no API key,
+  no authenticated endpoint, no account data, no WebSocket, no live HTTP smoke
+  by default, no geoblock or platform-rule bypass, no production execution, and
+  no profitability claim.
 
 ## Stage 0: Repository foundation
 

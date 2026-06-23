@@ -26,17 +26,17 @@ Polymarket endpoint.
   must stay market-data only and avoid unregistered/off-exchange trading paths:
   <https://www.cftc.gov/PressRoom/PressReleases/8478-22>.
 
-## Allowed next implementation slice
+## Implemented slice
 
-- Add a Polymarket US market-data adapter under
+- Added a Polymarket US market-data adapter under
   `src/edmn_trader/adapters/polymarket_us`.
-- Use committed local fixtures for tests.
-- Parse only public market/orderbook-style data into exchange-agnostic core or
-  replay structures.
-- Keep any HTTP client unauthenticated and restricted to the documented
+- Added committed local fixtures and offline tests.
+- Parsed public market-book data into the exchange-agnostic
+  `NormalizedOrderBook`.
+- Kept the HTTP client unauthenticated and restricted to the documented
   Polymarket US public API base URL.
-- Keep live HTTP smoke optional and out of scope until rate limits, terms, and
-  endpoint stability are reviewed again.
+- Deferred live HTTP smoke until rate limits, terms, and endpoint stability are
+  reviewed again.
 
 ## Stop conditions
 
