@@ -10,16 +10,16 @@ client, local fixtures, mocked HTTP tests, Decimal-safe JSONL snapshot storage,
 deterministic offline replay metrics, a fair-value/quote-engine dry run,
 risk-gated fake-adapter demo execution smoke infrastructure, and a finite
 Stage 6 market-maker replay workflow, and an offline Stage 7 research report
-workflow.
+workflow, and a fixture-first Polymarket US public market-data adapter.
 
 ## Last completed stage
 
-Stage 7: PnL attribution and research report.
+Stage 8: Polymarket US market-data research adapter.
 
 ## Stage plan status
 
 `docs/STAGE_PLAN.md` contains a completed-stage record ledger for Stages 0,
-1, 1.5, 2, 3, 4, 5, 6, and 7. The ledger records purpose, known commit hashes,
+1, 1.5, 2, 3, 4, 5, 6, 7, and 8. The ledger records purpose, known commit hashes,
 files/modules added, validation commands, status, next-stage boundary, and
 safety status for each completed stage.
 
@@ -67,6 +67,11 @@ must not use international Polymarket endpoints, trading endpoints, wallets,
 authentication, WebSockets, region bypass, live HTTP smoke by default, or
 production execution.
 
+Stage 8 is now implemented as a Polymarket US public market-data adapter. It
+normalizes local market-book fixtures into `NormalizedOrderBook` and includes a
+guarded read-only client restricted to the documented Polymarket US public base
+URL. Tests use local fixtures and mocked HTTP only.
+
 ## Important files
 
 - `AGENTS.md`: repo rules and first-read instructions.
@@ -82,6 +87,10 @@ production execution.
 - `src/edmn_trader/adapters/kalshi/client.py`: guarded read-only Kalshi Demo
   REST client for markets and orderbooks.
 - `src/edmn_trader/adapters/kalshi/orderbook.py`: Kalshi orderbook normalizer.
+- `src/edmn_trader/adapters/polymarket_us/client.py`: guarded read-only
+  Polymarket US public market-data client.
+- `src/edmn_trader/adapters/polymarket_us/orderbook.py`: Polymarket US
+  market-book normalizer.
 - `src/edmn_trader/data/snapshots.py`: snapshot model and snapshot JSONL
   persistence helpers.
 - `src/edmn_trader/data/jsonl.py`: Decimal-safe JSONL helpers.
@@ -119,6 +128,8 @@ production execution.
   run-control, adapter-error, and script-summary coverage.
 - `tests/test_research_report.py`: Stage 7 no-fill report, explicit fill
   attribution, secret-like fill rejection, and CLI coverage.
+- `tests/test_polymarket_us_adapter.py`: Stage 8 Polymarket US fixture
+  normalization, guarded public client, and malformed-book coverage.
 
 ## Commands that currently pass
 
@@ -147,6 +158,7 @@ python scripts/02_record_fixture_snapshots.py --output /tmp/edmn_stage7_snapshot
 python scripts/06_market_maker_replay.py --input /tmp/edmn_stage7_snapshots.jsonl --log-output /tmp/edmn_stage7_market_maker.jsonl
 python scripts/06_market_maker_replay.py --input /tmp/edmn_stage7_snapshots.jsonl --demo-opt-in --log-output /tmp/edmn_stage7_market_maker_demo.jsonl
 python scripts/07_research_report.py --market-maker-log /tmp/edmn_stage7_market_maker.jsonl --output /tmp/edmn_stage7_report.md
+pytest tests/test_polymarket_us_adapter.py
 ```
 
 Optional environment validation:
@@ -222,21 +234,19 @@ a stop gate is triggered.
 
 ## Next recommended stage
 
-Stage 8 implementation: fixture-first Polymarket US public market-data adapter.
+Stage 9 readiness check: U.S. equities research adapter, paper/research only.
 Start only after reconfirming clean synced `main`, CI, branch protection,
 required `Validate` status, local validation, and whether the owner-direct fast
-path or PR path applies.
+path or PR path applies. Do not implement Stage 9 until readiness is confirmed.
 
 ## Exact next prompt suggestion
 
-Use Codex Long Session Governance. Implement only the fixture-first Stage 8
-Polymarket US public market-data adapter from the Stage 8 section of
-`docs/STAGE_PLAN.md` and `docs/stage8_polymarket_readiness.md`; use TDD, keep
-tests offline, and do not add international Polymarket endpoints,
-authenticated/live trading, WebSocket ingestion, wallets, production endpoints,
-strategy optimization, unsupported data redistribution, or profitability
-claims.
+Use Codex Long Session Governance. Start with a Stage 9 readiness check from
+only the Stage 9 section of `docs/STAGE_PLAN.md`; do not implement Stage 9
+until readiness is confirmed, and do not add broker integration, credentials,
+live equities orders, production endpoints, strategy optimization, unsupported
+data redistribution, or profitability claims.
 
 ## Last updated timestamp
 
-2026-06-22 23:15:51 -07:00
+2026-06-22 23:21:26 -07:00

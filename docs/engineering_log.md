@@ -214,6 +214,18 @@ surface until terms, rate limits, and endpoint stability are reviewed again.
 That keeps the next implementation useful while avoiding region-bypass and
 execution ambiguity.
 
+## Stage 8 Polymarket US public market-data adapter
+
+Stage 8 added the second prediction-market adapter, scoped to Polymarket US
+public market data. The implementation normalizes a public market-book fixture
+into the existing `NormalizedOrderBook` model and exposes a guarded read-only
+client for the documented Polymarket US public base URL.
+
+The important boundary is what was not added. The adapter does not use the
+international Polymarket endpoint, authentication, wallets, account data,
+WebSockets, trading endpoints, live HTTP smoke by default, or execution paths.
+Tests use local fixtures and mocked HTTP only.
+
 ## Interview narrative
 
 A concise way to explain the current project:

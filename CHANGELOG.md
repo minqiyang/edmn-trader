@@ -6,6 +6,12 @@ numbers while the repository is still in early research scaffolding.
 
 ## Unreleased
 
+- Added a fixture-first Polymarket US public market-data adapter under
+  `src/edmn_trader/adapters/polymarket_us`.
+- Added local Polymarket US market-book fixture coverage for normalization into
+  the exchange-agnostic `NormalizedOrderBook`, guarded public base URL
+  enforcement, read-only unauthenticated GET behavior, and malformed/empty book
+  rejection.
 - Clarified Stage 8 readiness: future work may target only Polymarket US public
   market data with local fixtures and an unauthenticated read-only adapter;
   international endpoints, trading, wallets, WebSockets, and region bypass

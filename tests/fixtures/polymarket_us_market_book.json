@@ -1,0 +1,37 @@
+{
+  "marketData": {
+    "marketSlug": "will-fed-cut-rates-in-september",
+    "state": "OPEN",
+    "bids": [
+      {
+        "px": {
+          "value": "0.4200"
+        },
+        "qty": "13.00"
+      },
+      {
+        "px": {
+          "value": "0.4100"
+        },
+        "qty": "2.00"
+      }
+    ],
+    "offers": [
+      {
+        "px": {
+          "value": "0.4400"
+        },
+        "qty": "17.00"
+      },
+      {
+        "px": {
+          "value": "0.4500"
+        },
+        "qty": "3.00"
+      }
+    ],
+    "stats": {
+      "openInterest": "1000"
+    }
+  }
+}
