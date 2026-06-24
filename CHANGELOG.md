@@ -6,6 +6,10 @@ numbers while the repository is still in early research scaffolding.
 
 ## Unreleased
 
+- Clarified Stage 11 readiness for local/offline report-section expansion of
+  the Stage 10 paper report pack, with no new data adapters, live feeds,
+  security ranking, allocation advice, strategy optimization, execution paths,
+  or profitability claims.
 - Added Stage 10 offline paper research report-pack generation from local
   Stage 6/7 attribution inputs and local SEC companyfacts fixtures, with
   Markdown output, explicit not-supplied sections, and limitation notes.
