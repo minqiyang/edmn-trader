@@ -270,6 +270,18 @@ limitations visible in the output. It does not add broker integration, account
 data, live feeds, order paths, ranking, allocation advice, strategy
 optimization, production execution, or profitability claims.
 
+## Stage 11 readiness clarification
+
+After Stage 10, the safe next step is adding descriptive report sections, not
+new data access or advice. The clarified Stage 11 boundary keeps additional
+sections local/offline and requires each section to identify its local source,
+label missing optional inputs as not supplied, and stay separate from observed
+metrics, supplied assumptions, fundamentals, and limitations.
+
+The main tradeoff is deliberately postponing richer data sourcing, dashboards,
+recommendations, and optimization. Stage 11 should improve report readability
+without changing the project into a ranking or allocation system.
+
 ## Interview narrative
 
 A concise way to explain the current project:

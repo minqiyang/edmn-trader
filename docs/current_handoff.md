@@ -112,8 +112,16 @@ missing optional inputs as not supplied, and does not add ranking, allocation
 advice, live feeds, broker integration, execution, strategy optimization, or
 profitability claims.
 
-Next checkpoint: later report-section work needs a docs-only readiness
-clarification first unless a complete next-stage section is added.
+`docs/STAGE_PLAN.md` now contains the full Stage 11 specification and
+`docs/stage11_report_sections_readiness.md` records the readiness review.
+Stage 11 is ready only for local/offline descriptive report-section expansion
+of the Stage 10 pack. It must not add new data adapters, live feeds, broker
+integration, credentials, account or portfolio data, ranking, allocation
+advice, strategy optimization, execution, or profitability claims.
+
+Next checkpoint: Stage 11 implementation only.
+
+Exact next prompt: `Use Codex Long Session Governance. Implement only the local/offline Stage 11 report-section expansion from docs/STAGE_PLAN.md; use TDD, keep tests offline, and do not add new market-data adapters, broker integration, credentials, account data, portfolio data, live quote feeds, paid-vendor data, WebSockets, production endpoints, strategy optimization, security ranking, allocation advice, executable advice, or profitability claims.`
 
 ## Important files
 
@@ -127,6 +135,8 @@ clarification first unless a complete next-stage section is added.
   links for the Polymarket US public market-data boundary.
 - `docs/stage9_equities_readiness.md`: Stage 9 readiness note and source links
   for the SEC EDGAR public fundamentals boundary.
+- `docs/stage11_report_sections_readiness.md`: Stage 11 readiness note for
+  local/offline report-section expansion.
 - `docs/engineering_log.md`: narrative engineering record.
 - `src/edmn_trader/core/models.py`: exchange-agnostic core models.
 - `src/edmn_trader/adapters/kalshi/client.py`: guarded read-only Kalshi Demo

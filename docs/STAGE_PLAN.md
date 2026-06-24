@@ -927,3 +927,53 @@ advice, no production execution, and no profitability claims.
 Next-stage boundary: later stages may add additional report sections only after
 the report pack keeps all data local/offline, assumption-labeled, and
 non-executable.
+
+## Stage 11: Additional report sections, local/offline only
+
+Purpose: extend the Stage 10 report pack with additional descriptive Markdown
+sections while preserving local/offline inputs, assumption labeling, and
+non-executable output.
+
+Deliverables: report-section extension, offline tests, updated Markdown output,
+and limitation notes.
+
+Allowed scope:
+
+- Use existing local Stage 6/7/10 outputs, explicit local fill assumptions, and
+  committed fixtures only.
+- Add descriptive sections such as source inventory, assumption appendix, or
+  local-run comparison tables.
+- Identify the local source for every new section.
+- Label missing optional inputs as not supplied.
+- Keep observed metrics, supplied assumptions, SEC fundamentals, and
+  limitations separate.
+
+Acceptance checks:
+
+- Reports do not rank securities, recommend allocations, optimize strategies,
+  emit executable advice, or claim profitability.
+- Reports do not use broker APIs, credentials, account data, portfolio data,
+  live quote feeds, paid-vendor feeds, proprietary exchange data, WebSockets, or
+  production endpoints.
+- New sections are optional-input safe: missing inputs produce explicit
+  not-supplied text instead of inferred values.
+- Tests remain offline and deterministic.
+
+Validation commands:
+
+```bash
+python -m pip install -e ".[dev]"
+pytest
+ruff check .
+python scripts/01_replay_orderbook_fixture.py
+```
+
+Explicit non-goals: no new market-data adapters, no live equities orders, no
+broker integration, no credentials, no account or portfolio data, no live quote
+feeds, no paid-vendor market data, no strategy optimization, no security
+ranking, no allocation advice, no production execution, and no profitability
+claims.
+
+Next-stage boundary: later stages may add new report inputs only after their
+data-source rights, offline fixture behavior, and non-executable report
+boundaries are clarified first.
