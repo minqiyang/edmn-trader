@@ -418,6 +418,16 @@ descriptor. It renders reviewer-supplied method labels, source paths,
 methodology text, assumption scope, and limitation notes as descriptive context
 without turning methodology notes into advice or production-readiness claims.
 
+After Stage 16, the next safe report-input kind is a data dictionary. The
+clarified Stage 17 boundary allows a local data-dictionary descriptor to record
+reviewer-supplied field labels, data type labels, units, definitions, local
+source paths, rights/sensitivity labels, and caveats.
+
+The boundary stays descriptive. Stage 17 should make field metadata visible in
+the report pack without reading raw private data contents, fetching remote
+data, ranking fields or sources, optimizing strategies, producing advice, or
+implying production readiness.
+
 ## Interview narrative
 
 A concise way to explain the current project:
