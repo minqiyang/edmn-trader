@@ -329,6 +329,20 @@ across local runs, but it must not rank securities, choose a best run, optimize
 strategy parameters, recommend allocations, emit executable advice, or claim
 profitability.
 
+## Stage 13 local run-comparison input
+
+Stage 13 added support for `local_run_comparison` manifest entries in the
+existing paper report pack. The implementation reads a local comparison
+descriptor as metadata, renders a separate Markdown section, reports missing
+optional comparison descriptors as not supplied, and rejects secret-like fields
+or remote URLs.
+
+The descriptor does not cause the report pack to ingest raw private data or
+fetch referenced outputs. It gives the report a controlled way to summarize
+local run labels, file paths, observed decision counts, not-supplied inputs, and
+limitation notes while avoiding ranking, allocation advice, optimization,
+executable advice, or profitability framing.
+
 ## Interview narrative
 
 A concise way to explain the current project:

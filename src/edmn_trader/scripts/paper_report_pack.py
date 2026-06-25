@@ -38,6 +38,7 @@ class PaperReportPack:
     stage7_report: ResearchReport
     sec_fact_count: int
     manifest_entry_count: int
+    run_comparison_count: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,6 +51,26 @@ class ReportInputManifestEntry:
     rights_note: str
     assumption_scope: str
     required: bool
+
+
+@dataclass(frozen=True, slots=True)
+class LocalRunComparison:
+    """One descriptive local run-comparison row."""
+
+    source_label: str
+    run_name: str
+    local_path: str
+    observed_decision_count: int
+    not_supplied_inputs: tuple[str, ...]
+    limitation_note: str
+
+
+@dataclass(frozen=True, slots=True)
+class MissingRunComparisonInput:
+    """Optional local run-comparison descriptor that was not supplied."""
+
+    display_label: str
+    local_path: str
 
 
 def generate_paper_report_pack(pack_input: PaperReportPackInput) -> PaperReportPack:
@@ -70,6 +91,10 @@ def generate_paper_report_pack(pack_input: PaperReportPackInput) -> PaperReportP
         if pack_input.report_input_manifest
         else ()
     )
+    run_comparisons, missing_run_comparisons = _read_run_comparisons(
+        pack_input.report_input_manifest,
+        manifest_entries,
+    )
     output_path = pack_input.output_dir / "report_pack.md"
     output_path.write_text(
         _render_markdown(
@@ -78,6 +103,8 @@ def generate_paper_report_pack(pack_input: PaperReportPackInput) -> PaperReportP
             stage7_report_path=stage7_report_path,
             sec_facts=sec_facts,
             manifest_entries=manifest_entries,
+            run_comparisons=run_comparisons,
+            missing_run_comparisons=missing_run_comparisons,
         ),
         encoding="utf-8",
         newline="\n",
@@ -88,6 +115,7 @@ def generate_paper_report_pack(pack_input: PaperReportPackInput) -> PaperReportP
         stage7_report=stage7_report,
         sec_fact_count=len(sec_facts),
         manifest_entry_count=len(manifest_entries),
+        run_comparison_count=len(run_comparisons),
     )
 
 
@@ -101,6 +129,7 @@ def render_summary(pack: PaperReportPack) -> str:
             f"supplied_fills={pack.stage7_report.supplied_fills}",
             f"sec_facts={pack.sec_fact_count}",
             f"manifest_inputs={pack.manifest_entry_count}",
+            f"run_comparisons={pack.run_comparison_count}",
             "limitations=local/offline pack; descriptive only; no profitability claims",
         )
     )
@@ -222,6 +251,127 @@ def _parse_manifest_entry(
     )
 
 
+def _read_run_comparisons(
+    manifest_path: Path | None,
+    manifest_entries: tuple[ReportInputManifestEntry, ...],
+) -> tuple[tuple[LocalRunComparison, ...], tuple[MissingRunComparisonInput, ...]]:
+    if manifest_path is None:
+        return (), ()
+
+    runs: list[LocalRunComparison] = []
+    missing: list[MissingRunComparisonInput] = []
+    for entry in manifest_entries:
+        if entry.input_kind != "local_run_comparison":
+            continue
+        descriptor_path = _resolve_manifest_local_path(manifest_path, entry.local_path)
+        if not descriptor_path.exists():
+            if entry.required:
+                msg = (
+                    f"{manifest_path}: required local run-comparison input is missing: "
+                    f"{entry.local_path}"
+                )
+                raise ValueError(msg)
+            missing.append(
+                MissingRunComparisonInput(
+                    display_label=entry.display_label,
+                    local_path=entry.local_path,
+                )
+            )
+            continue
+
+        runs.extend(
+            _read_run_comparison_descriptor(
+                descriptor_path,
+                source_label=entry.display_label,
+            )
+        )
+    return tuple(runs), tuple(missing)
+
+
+def _resolve_manifest_local_path(manifest_path: Path, local_path: str) -> Path:
+    path = Path(local_path)
+    if path.is_absolute():
+        return path
+    return manifest_path.parent / path
+
+
+def _read_run_comparison_descriptor(
+    path: Path, *, source_label: str
+) -> tuple[LocalRunComparison, ...]:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        msg = f"{path}: local run-comparison descriptor must contain a JSON object"
+        raise ValueError(msg)
+    _reject_secret_like_fields(payload, path=path)
+
+    runs = payload.get("runs")
+    if not isinstance(runs, list):
+        msg = f"{path}: local run-comparison descriptor must contain a runs list"
+        raise ValueError(msg)
+
+    parsed_runs: list[LocalRunComparison] = []
+    for index, item in enumerate(runs, start=1):
+        if not isinstance(item, dict):
+            msg = f"{path}: local run-comparison run {index} must be an object"
+            raise ValueError(msg)
+        _reject_secret_like_fields(item, path=path)
+        parsed_runs.append(
+            _parse_run_comparison(
+                item,
+                path=path,
+                index=index,
+                source_label=source_label,
+            )
+        )
+    return tuple(parsed_runs)
+
+
+def _parse_run_comparison(
+    item: dict[str, object], *, path: Path, index: int, source_label: str
+) -> LocalRunComparison:
+    required_fields = (
+        "run_name",
+        "local_path",
+        "observed_decision_count",
+        "not_supplied_inputs",
+        "limitation_note",
+    )
+    missing = [field for field in required_fields if field not in item]
+    if missing:
+        msg = f"{path}: local run-comparison run {index} missing field(s): {', '.join(missing)}"
+        raise ValueError(msg)
+
+    local_path = str(item["local_path"])
+    parsed = urlparse(local_path)
+    if parsed.scheme or parsed.netloc:
+        msg = f"{path}: local run-comparison run {index} remote URL is not supported"
+        raise ValueError(msg)
+
+    observed_decision_count = item["observed_decision_count"]
+    if not isinstance(observed_decision_count, int) or observed_decision_count < 0:
+        msg = (
+            f"{path}: local run-comparison run {index} "
+            "observed_decision_count must be a non-negative integer"
+        )
+        raise ValueError(msg)
+
+    not_supplied_inputs = item["not_supplied_inputs"]
+    if not isinstance(not_supplied_inputs, list) or not all(
+        isinstance(value, str) for value in not_supplied_inputs
+    ):
+        msg = f"{path}: local run-comparison run {index} not_supplied_inputs must be a string list"
+        raise ValueError(msg)
+
+    return LocalRunComparison(
+        source_label=source_label,
+        run_name=str(item["run_name"]),
+        local_path=local_path,
+        observed_decision_count=observed_decision_count,
+        not_supplied_inputs=tuple(not_supplied_inputs),
+        limitation_note=str(item["limitation_note"]),
+    )
+
+
 def _render_markdown(
     *,
     pack_input: PaperReportPackInput,
@@ -229,6 +379,8 @@ def _render_markdown(
     stage7_report_path: Path,
     sec_facts: tuple[EquityFundamentalFact, ...],
     manifest_entries: tuple[ReportInputManifestEntry, ...],
+    run_comparisons: tuple[LocalRunComparison, ...],
+    missing_run_comparisons: tuple[MissingRunComparisonInput, ...],
 ) -> str:
     return "\n".join(
         (
@@ -270,6 +422,10 @@ def _render_markdown(
             "## Report Input Manifest",
             "",
             _render_manifest_entries(manifest_entries),
+            "",
+            "## Local Run Comparison",
+            "",
+            _render_run_comparisons(run_comparisons, missing_run_comparisons),
             "",
             "## SEC Fundamentals",
             "",
@@ -324,6 +480,37 @@ def _render_manifest_entries(entries: tuple[ReportInputManifestEntry, ...]) -> s
         for entry in entries
     )
     return "\n".join(rows)
+
+
+def _render_run_comparisons(
+    runs: tuple[LocalRunComparison, ...],
+    missing_inputs: tuple[MissingRunComparisonInput, ...],
+) -> str:
+    if not runs and not missing_inputs:
+        return "| input | status |\n| --- | --- |\n| Local run comparison | not supplied |"
+
+    rows = [
+        "| source | run | local path | observed decisions | not supplied inputs | limitation |",
+        "| --- | --- | --- | ---: | --- | --- |",
+    ]
+    rows.extend(
+        f"| {run.source_label} | {run.run_name} | {run.local_path} | "
+        f"{run.observed_decision_count} | {_format_not_supplied_inputs(run.not_supplied_inputs)} | "
+        f"{run.limitation_note} |"
+        for run in runs
+    )
+    rows.extend(
+        f"| {missing_input.display_label} | not supplied | {missing_input.local_path} | 0 | "
+        "not supplied | not supplied |"
+        for missing_input in missing_inputs
+    )
+    return "\n".join(rows)
+
+
+def _format_not_supplied_inputs(values: tuple[str, ...]) -> str:
+    if not values:
+        return "none"
+    return ", ".join(values)
 
 
 def _render_sec_facts(sec_facts: tuple[EquityFundamentalFact, ...]) -> str:
