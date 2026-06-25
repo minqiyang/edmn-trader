@@ -393,6 +393,18 @@ descriptor. It renders reviewer-supplied labels, source paths, note text,
 follow-up questions, and limitation notes as descriptive context without
 turning those notes into recommendations or production-readiness claims.
 
+## Stage 16 readiness clarification
+
+After Stage 15, the next safe report-input kind is methodology metadata. The
+clarified Stage 16 boundary allows a local methodology-notes descriptor to
+record reviewer-supplied method context, assumption descriptions, local source
+paths, and caveats.
+
+The boundary stays descriptive. Stage 16 should make methodology context
+visible in the report pack without reading private files, fetching remote data,
+ranking runs, optimizing strategies, producing advice, or implying production
+readiness.
+
 ## Interview narrative
 
 A concise way to explain the current project:
