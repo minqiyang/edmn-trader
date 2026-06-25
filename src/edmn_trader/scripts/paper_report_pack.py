@@ -41,6 +41,7 @@ class PaperReportPack:
     run_comparison_count: int
     validation_summary_count: int
     review_note_count: int
+    methodology_note_count: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -115,6 +116,26 @@ class MissingReviewNotesInput:
     local_path: str
 
 
+@dataclass(frozen=True, slots=True)
+class LocalMethodologyNote:
+    """One descriptive local methodology note."""
+
+    source_label: str
+    method_label: str
+    source_path: str
+    methodology_text: str
+    assumption_scope: str
+    limitation_note: str
+
+
+@dataclass(frozen=True, slots=True)
+class MissingMethodologyNotesInput:
+    """Optional local methodology-notes descriptor that was not supplied."""
+
+    display_label: str
+    local_path: str
+
+
 VALIDATION_SUMMARY_STATUSES = frozenset(("pass", "fail", "skipped"))
 
 
@@ -148,6 +169,10 @@ def generate_paper_report_pack(pack_input: PaperReportPackInput) -> PaperReportP
         pack_input.report_input_manifest,
         manifest_entries,
     )
+    methodology_notes, missing_methodology_notes = _read_methodology_notes(
+        pack_input.report_input_manifest,
+        manifest_entries,
+    )
     output_path = pack_input.output_dir / "report_pack.md"
     output_path.write_text(
         _render_markdown(
@@ -162,6 +187,8 @@ def generate_paper_report_pack(pack_input: PaperReportPackInput) -> PaperReportP
             missing_validation_summaries=missing_validation_summaries,
             review_notes=review_notes,
             missing_review_notes=missing_review_notes,
+            methodology_notes=methodology_notes,
+            missing_methodology_notes=missing_methodology_notes,
         ),
         encoding="utf-8",
         newline="\n",
@@ -175,6 +202,7 @@ def generate_paper_report_pack(pack_input: PaperReportPackInput) -> PaperReportP
         run_comparison_count=len(run_comparisons),
         validation_summary_count=len(validation_summaries),
         review_note_count=len(review_notes),
+        methodology_note_count=len(methodology_notes),
     )
 
 
@@ -191,6 +219,7 @@ def render_summary(pack: PaperReportPack) -> str:
             f"run_comparisons={pack.run_comparison_count}",
             f"validation_summaries={pack.validation_summary_count}",
             f"review_notes={pack.review_note_count}",
+            f"methodology_notes={pack.methodology_note_count}",
             "limitations=local/offline pack; descriptive only; no profitability claims",
         )
     )
@@ -640,6 +669,105 @@ def _parse_review_note(
     )
 
 
+def _read_methodology_notes(
+    manifest_path: Path | None,
+    manifest_entries: tuple[ReportInputManifestEntry, ...],
+) -> tuple[tuple[LocalMethodologyNote, ...], tuple[MissingMethodologyNotesInput, ...]]:
+    if manifest_path is None:
+        return (), ()
+
+    methods: list[LocalMethodologyNote] = []
+    missing: list[MissingMethodologyNotesInput] = []
+    for entry in manifest_entries:
+        if entry.input_kind != "local_methodology_notes":
+            continue
+        descriptor_path = _resolve_manifest_local_path(manifest_path, entry.local_path)
+        if not descriptor_path.exists():
+            if entry.required:
+                msg = (
+                    f"{manifest_path}: required local methodology-notes input is missing: "
+                    f"{entry.local_path}"
+                )
+                raise ValueError(msg)
+            missing.append(
+                MissingMethodologyNotesInput(
+                    display_label=entry.display_label,
+                    local_path=entry.local_path,
+                )
+            )
+            continue
+
+        methods.extend(
+            _read_methodology_notes_descriptor(
+                descriptor_path,
+                source_label=entry.display_label,
+            )
+        )
+    return tuple(methods), tuple(missing)
+
+
+def _read_methodology_notes_descriptor(
+    path: Path, *, source_label: str
+) -> tuple[LocalMethodologyNote, ...]:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        msg = f"{path}: local methodology-notes descriptor must contain a JSON object"
+        raise ValueError(msg)
+    _reject_secret_like_fields(payload, path=path)
+
+    methods = payload.get("methods")
+    if not isinstance(methods, list):
+        msg = f"{path}: local methodology-notes descriptor must contain a methods list"
+        raise ValueError(msg)
+
+    parsed_methods: list[LocalMethodologyNote] = []
+    for index, item in enumerate(methods, start=1):
+        if not isinstance(item, dict):
+            msg = f"{path}: local methodology note {index} must be an object"
+            raise ValueError(msg)
+        _reject_secret_like_fields(item, path=path)
+        parsed_methods.append(
+            _parse_methodology_note(
+                item,
+                path=path,
+                index=index,
+                source_label=source_label,
+            )
+        )
+    return tuple(parsed_methods)
+
+
+def _parse_methodology_note(
+    item: dict[str, object], *, path: Path, index: int, source_label: str
+) -> LocalMethodologyNote:
+    required_fields = (
+        "method_label",
+        "source_path",
+        "methodology_text",
+        "assumption_scope",
+        "limitation_note",
+    )
+    missing = [field for field in required_fields if field not in item]
+    if missing:
+        msg = f"{path}: local methodology note {index} missing field(s): {', '.join(missing)}"
+        raise ValueError(msg)
+
+    source_path = str(item["source_path"])
+    parsed = urlparse(source_path)
+    if parsed.scheme or parsed.netloc:
+        msg = f"{path}: local methodology note {index} remote URL is not supported"
+        raise ValueError(msg)
+
+    return LocalMethodologyNote(
+        source_label=source_label,
+        method_label=str(item["method_label"]),
+        source_path=source_path,
+        methodology_text=str(item["methodology_text"]),
+        assumption_scope=str(item["assumption_scope"]),
+        limitation_note=str(item["limitation_note"]),
+    )
+
+
 def _render_markdown(
     *,
     pack_input: PaperReportPackInput,
@@ -653,6 +781,8 @@ def _render_markdown(
     missing_validation_summaries: tuple[MissingValidationSummaryInput, ...],
     review_notes: tuple[LocalReviewNote, ...],
     missing_review_notes: tuple[MissingReviewNotesInput, ...],
+    methodology_notes: tuple[LocalMethodologyNote, ...],
+    missing_methodology_notes: tuple[MissingMethodologyNotesInput, ...],
 ) -> str:
     return "\n".join(
         (
@@ -706,6 +836,10 @@ def _render_markdown(
             "## Local Review Notes",
             "",
             _render_review_notes(review_notes, missing_review_notes),
+            "",
+            "## Local Methodology Notes",
+            "",
+            _render_methodology_notes(methodology_notes, missing_methodology_notes),
             "",
             "## SEC Fundamentals",
             "",
@@ -832,6 +966,30 @@ def _render_review_notes(
         f"| {note.source_label} | {note.note_label} | {note.source_path} | "
         f"{note.note_text} | {note.follow_up_question} | {note.limitation_note} |"
         for note in notes
+    )
+    rows.extend(
+        f"| {missing_input.display_label} | not supplied | {missing_input.local_path} | "
+        "not supplied | not supplied | not supplied |"
+        for missing_input in missing_inputs
+    )
+    return "\n".join(rows)
+
+
+def _render_methodology_notes(
+    methods: tuple[LocalMethodologyNote, ...],
+    missing_inputs: tuple[MissingMethodologyNotesInput, ...],
+) -> str:
+    if not methods and not missing_inputs:
+        return "| input | status |\n| --- | --- |\n| Local methodology notes | not supplied |"
+
+    rows = [
+        "| source | method | source path | methodology | assumption scope | limitation |",
+        "| --- | --- | --- | --- | --- | --- |",
+    ]
+    rows.extend(
+        f"| {method.source_label} | {method.method_label} | {method.source_path} | "
+        f"{method.methodology_text} | {method.assumption_scope} | {method.limitation_note} |"
+        for method in methods
     )
     rows.extend(
         f"| {missing_input.display_label} | not supplied | {missing_input.local_path} | "

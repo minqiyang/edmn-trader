@@ -15,17 +15,17 @@ EDGAR public fundamentals adapter, and an offline Stage 10 paper research
 report pack with a Stage 11 local source inventory section and Stage 12 local
 report-input manifest support, plus Stage 13 local run-comparison report-input
 metadata, Stage 14 local validation-summary report-input metadata, and Stage
-15 local review-notes report-input metadata. `docs/STAGE_PLAN.md` also now
-clarifies Stage 16 as a local/offline methodology-notes report input.
+15 local review-notes report-input metadata, plus Stage 16 local
+methodology-notes report-input metadata.
 
 ## Last completed stage
 
-Stage 15: Local review-notes report input, local/offline only.
+Stage 16: Local methodology-notes report input, local/offline only.
 
 ## Stage plan status
 
 `docs/STAGE_PLAN.md` contains a completed-stage record ledger for Stages 0,
-1, 1.5, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, and 15. The ledger records
+1, 1.5, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, and 16. The ledger records
 purpose, known commit hashes, files/modules added, validation commands, status,
 next-stage boundary, and safety status for each completed stage.
 
@@ -244,10 +244,18 @@ portfolio data, use live feeds, rank securities, recommend allocations,
 optimize strategies, emit executable advice, imply production readiness, or
 claim profitability.
 
-Next checkpoint: Stage 16 local methodology-notes report-input implementation
-only.
+Stage 16 is now implemented as a local/offline report-input kind for the paper
+report pack. It reads only a local methodology-notes descriptor referenced by
+the manifest, renders a separate descriptive methodology section, reports
+missing optional methodology descriptors as not supplied, rejects secret-like
+fields and remote URLs, and does not execute commands, read private data
+contents, add adapters, fetch remote data, rank securities, recommend
+allocations, optimize strategies, emit executable advice, imply production
+readiness, or claim profitability.
 
-Exact next prompt: `Use Codex Long Session Governance. Continue continuous staged autopilot from the verified current handoff. Implement only the Stage 16 local/offline local_methodology_notes report-input kind for the paper report pack, with offline tests and docs updates; do not execute commands from report inputs, read private data contents, add new market-data adapters, broker integration, credentials, account data, portfolio data, live quote feeds, paid-vendor data, WebSockets, remote fetching, production endpoints, strategy optimization, security ranking, allocation advice, executable advice, production-readiness claims, unsupported data redistribution, or profitability claims.`
+Next checkpoint: next concrete report-input-kind readiness clarification only.
+
+Exact next prompt: `Use Codex Long Session Governance. Continue continuous staged autopilot from the verified current handoff. Clarify only the next concrete local/offline report-input kind in docs/STAGE_PLAN.md; do not implement it yet, and do not add new market-data adapters, broker integration, credentials, account data, portfolio data, live quote feeds, paid-vendor data, WebSockets, remote fetching, production endpoints, strategy optimization, security ranking, allocation advice, executable advice, production-readiness claims, unsupported data redistribution, or profitability claims.`
 
 ## Important files
 
@@ -305,8 +313,8 @@ Exact next prompt: `Use Codex Long Session Governance. Continue continuous stage
   Markdown report generator for Stage 6 logs and explicit fill assumptions.
 - `scripts/07_research_report.py`: root wrapper for Stage 7 reporting.
 - `src/edmn_trader/scripts/paper_report_pack.py`: importable Stage
-  10/12/13/14/15 offline paper research report-pack generator.
-- `scripts/10_paper_report_pack.py`: root wrapper for Stage 10/12/13/14/15
+  10/12/13/14/15/16 offline paper research report-pack generator.
+- `scripts/10_paper_report_pack.py`: root wrapper for Stage 10/12/13/14/15/16
   report packs.
 - `tests/test_kalshi_client.py`: mocked HTTP coverage for the Stage 2 client.
 - `tests/test_kalshi_orderbook.py`: normalizer coverage.
@@ -325,12 +333,13 @@ Exact next prompt: `Use Codex Long Session Governance. Continue continuous stage
   normalization, guarded public client, and malformed-book coverage.
 - `tests/test_sec_edgar_adapter.py`: Stage 9 SEC companyfacts normalization,
   guarded public client, explicit User-Agent, and malformed-value coverage.
-- `tests/test_paper_report_pack.py`: Stage 10/12/13/14/15 report-pack coverage
+- `tests/test_paper_report_pack.py`: Stage 10/12/13/14/15/16 report-pack coverage
   for observed metrics, source inventory, missing optional inputs, local SEC
   facts, manifest metadata, local run-comparison metadata, unsafe
   manifest/comparison rejection, local validation-summary metadata, unsafe
   validation-summary rejection, local review-notes metadata, unsafe
-  review-notes rejection, and CLI output.
+  review-notes rejection, local methodology-notes metadata, unsafe
+  methodology-notes rejection, and CLI output.
 
 ## Commands that currently pass
 
@@ -438,23 +447,22 @@ a stop gate is triggered.
 
 ## Next recommended stage
 
-Stage 16 local methodology-notes report-input implementation only. Start only
-after reconfirming clean synced `main`, CI, branch protection, required
-`Validate` status, local validation, and whether the owner-direct fast path or
-PR path applies.
+Next concrete report-input-kind readiness clarification only. Start only after
+reconfirming clean synced `main`, CI, branch protection, required `Validate`
+status, local validation, and whether the owner-direct fast path or PR path
+applies.
 
 ## Exact next prompt suggestion
 
 Use Codex Long Session Governance. Continue continuous staged autopilot from
-the verified current handoff. Implement only the Stage 16 local/offline
-`local_methodology_notes` report-input kind for the paper report pack, with
-offline tests and docs updates; do not execute commands from report inputs,
-read private data contents, add new market-data adapters, broker integration,
-credentials, account data, portfolio data, live quote feeds, paid-vendor data,
-WebSockets, remote fetching, production endpoints, strategy optimization,
-security ranking, allocation advice, executable advice, production-readiness
-claims, unsupported data redistribution, or profitability claims.
+the verified current handoff. Clarify only the next concrete local/offline
+report-input kind in `docs/STAGE_PLAN.md`; do not implement it yet, and do not
+add new market-data adapters, broker integration, credentials, account data,
+portfolio data, live quote feeds, paid-vendor data, WebSockets, remote
+fetching, production endpoints, strategy optimization, security ranking,
+allocation advice, executable advice, production-readiness claims, unsupported
+data redistribution, or profitability claims.
 
 ## Last updated timestamp
 
-2026-06-24 23:20:46 -07:00
+2026-06-24 23:26:11 -07:00
