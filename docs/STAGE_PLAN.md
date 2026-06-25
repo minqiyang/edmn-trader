@@ -1227,3 +1227,62 @@ Next-stage boundary: implementation may add the local validation-summary input
 kind only within the local/offline report-pack path and must not add command
 execution, remote fetches, new adapters, production endpoints, ranking,
 allocation, optimization, executable advice, or production-readiness claims.
+
+## Stage 15: Local review-notes report input, local/offline only
+
+Purpose: clarify the next concrete report-input kind after Stage 14: a local
+review-notes input that records human review notes, caveats, and follow-up
+questions for a report pack without reading private data contents, fetching
+data, ranking runs, or producing executable advice.
+
+Deliverables: Stage 15 implementation may add a `local_review_notes` input kind
+to the report-input manifest, parse a local review-notes descriptor, render a
+descriptive report section, add offline tests, and update limitation notes.
+
+Allowed scope:
+
+- Use a local descriptor file only.
+- Treat the descriptor as reviewer-supplied metadata, not as a data-ingestion
+  or recommendation path.
+- Describe only note labels, local source paths, note text, optional follow-up
+  questions, and limitation notes.
+- Reject remote URLs and secret-like fields.
+- Preserve separation between observed report metrics, supplied assumptions,
+  fundamentals, manifest metadata, comparison metadata, validation metadata,
+  review notes, and limitations.
+- Label missing optional review-notes inputs as not supplied.
+
+Acceptance checks:
+
+- The implementation remains local/offline and deterministic.
+- The report pack does not execute commands, read secrets, read account data,
+  read portfolio data, fetch remote data, use live feeds, inspect paid-vendor
+  or proprietary datasets, or infer private data from referenced files.
+- The output does not rank securities, recommend allocations, optimize
+  strategies, select a best run, emit executable advice, imply production
+  readiness, or claim profitability.
+- Missing optional review-notes inputs produce explicit not-supplied text
+  instead of inferred values.
+- Tests use local descriptors and generated project artifacts only.
+
+Validation commands:
+
+```bash
+python -m pip install -e ".[dev]"
+pytest
+ruff check .
+python scripts/01_replay_orderbook_fixture.py
+```
+
+Explicit non-goals: no command execution from report inputs, no new
+market-data adapters, no remote fetching, no broker integration, no
+credentials, no account or portfolio data, no live quote feeds, no paid-vendor
+market data, no WebSockets, no production endpoints, no strategy optimization,
+no security ranking, no allocation advice, no executable advice, no production
+readiness claim, no unsupported data redistribution, and no profitability
+claims.
+
+Next-stage boundary: implementation may add the local review-notes input kind
+only within the local/offline report-pack path and must not add command
+execution, remote fetches, new adapters, production endpoints, ranking,
+allocation, optimization, executable advice, or production-readiness claims.
