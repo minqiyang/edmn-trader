@@ -369,6 +369,98 @@ def test_paper_report_pack_rejects_unsafe_review_notes_descriptor(tmp_path: Path
         )
 
 
+def test_paper_report_pack_renders_local_methodology_notes_input(tmp_path: Path) -> None:
+    methodology_notes_path = _write_methodology_notes_descriptor(tmp_path)
+    manifest_path = _write_report_input_manifest(
+        tmp_path,
+        local_path=methodology_notes_path.name,
+        input_kind="local_methodology_notes",
+        display_label="Local methodology notes",
+    )
+    output_dir = tmp_path / "pack"
+
+    pack = generate_paper_report_pack(
+        PaperReportPackInput(
+            market_maker_logs=(_write_stage_6_log(tmp_path),),
+            report_input_manifest=manifest_path,
+            output_dir=output_dir,
+        )
+    )
+
+    assert pack.methodology_note_count == 2
+    text = (output_dir / "report_pack.md").read_text(encoding="utf-8")
+    assert "Local Methodology Notes" in text
+    assert "baseline method" in text
+    assert "methodology-notes.json" in text
+    assert "descriptive methodology context only" in text
+    assert "local/offline assumptions" in text
+    assert "recommend" not in text.lower()
+
+
+def test_paper_report_pack_marks_missing_optional_methodology_notes_not_supplied(
+    tmp_path: Path,
+) -> None:
+    manifest_path = _write_report_input_manifest(
+        tmp_path,
+        local_path="missing-methodology-notes.json",
+        input_kind="local_methodology_notes",
+        display_label="Missing methodology notes",
+    )
+    output_dir = tmp_path / "pack"
+
+    generate_paper_report_pack(
+        PaperReportPackInput(
+            market_maker_logs=(_write_stage_6_log(tmp_path),),
+            report_input_manifest=manifest_path,
+            output_dir=output_dir,
+        )
+    )
+
+    text = (output_dir / "report_pack.md").read_text(encoding="utf-8")
+    assert "Local Methodology Notes" in text
+    assert "Missing methodology notes | not supplied" in text
+
+
+def test_paper_report_pack_rejects_unsafe_methodology_notes_descriptor(
+    tmp_path: Path,
+) -> None:
+    secret_descriptor_path = _write_methodology_notes_descriptor(
+        tmp_path,
+        extra_method_field={"private_key": "should-not-be-read"},
+    )
+    secret_manifest_path = _write_report_input_manifest(
+        tmp_path,
+        local_path=secret_descriptor_path.name,
+        input_kind="local_methodology_notes",
+    )
+    with pytest.raises(ValueError, match="secret-like"):
+        generate_paper_report_pack(
+            PaperReportPackInput(
+                market_maker_logs=(_write_stage_6_log(tmp_path),),
+                report_input_manifest=secret_manifest_path,
+                output_dir=tmp_path / "secret-methodology-pack",
+            )
+        )
+
+    remote_descriptor_path = _write_methodology_notes_descriptor(
+        tmp_path,
+        source_path="https://example.com/methodology.md",
+    )
+    remote_manifest_path = _write_report_input_manifest(
+        tmp_path,
+        local_path=remote_descriptor_path.name,
+        input_kind="local_methodology_notes",
+    )
+    with pytest.raises(ValueError, match="remote URL"):
+        generate_paper_report_pack(
+            PaperReportPackInput(
+                market_maker_logs=(_write_stage_6_log(tmp_path),),
+                report_input_manifest=remote_manifest_path,
+                output_dir=tmp_path / "remote-methodology-pack",
+            )
+        )
+
+
 def test_paper_report_pack_cli_writes_markdown(tmp_path: Path, capsys, monkeypatch) -> None:
     output_dir = tmp_path / "pack"
     manifest_path = _write_report_input_manifest(tmp_path)
@@ -524,6 +616,42 @@ def _write_review_notes_descriptor(
                         "source_path": "review-notes.json",
                         "note_text": "fills are supplied assumptions only",
                         "follow_up_question": "",
+                        "limitation_note": "descriptive only",
+                    },
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    return descriptor_path
+
+
+def _write_methodology_notes_descriptor(
+    tmp_path: Path,
+    *,
+    source_path: str = "methodology-notes.json",
+    extra_method_field: dict[str, str] | None = None,
+) -> Path:
+    descriptor_path = tmp_path / "methodology_notes.json"
+    first_method = {
+        "method_label": "baseline method",
+        "source_path": source_path,
+        "methodology_text": "descriptive methodology context only",
+        "assumption_scope": "local/offline assumptions",
+        "limitation_note": "not investment advice",
+    }
+    if extra_method_field:
+        first_method.update(extra_method_field)
+    descriptor_path.write_text(
+        json.dumps(
+            {
+                "methods": [
+                    first_method,
+                    {
+                        "method_label": "fill assumption method",
+                        "source_path": "methodology-notes.json",
+                        "methodology_text": "fills are supplied explicitly",
+                        "assumption_scope": "hypothetical local fills only",
                         "limitation_note": "descriptive only",
                     },
                 ]

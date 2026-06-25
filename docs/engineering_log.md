@@ -405,6 +405,19 @@ visible in the report pack without reading private files, fetching remote data,
 ranking runs, optimizing strategies, producing advice, or implying production
 readiness.
 
+## Stage 16 local methodology-notes input
+
+Stage 16 added support for `local_methodology_notes` manifest entries in the
+paper report pack. The implementation reads a local methodology-notes
+descriptor as metadata, renders a separate Markdown section, reports missing
+optional methodology descriptors as not supplied, and rejects secret-like
+fields or remote URLs.
+
+The report pack still does not read private methodology files referenced by the
+descriptor. It renders reviewer-supplied method labels, source paths,
+methodology text, assumption scope, and limitation notes as descriptive context
+without turning methodology notes into advice or production-readiness claims.
+
 ## Interview narrative
 
 A concise way to explain the current project:
