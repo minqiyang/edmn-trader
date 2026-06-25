@@ -14,7 +14,8 @@ fixture-first Polymarket US public market-data adapter, a fixture-first SEC
 EDGAR public fundamentals adapter, and an offline Stage 10 paper research
 report pack with a Stage 11 local source inventory section and Stage 12 local
 report-input manifest support, plus Stage 13 local run-comparison report-input
-metadata.
+metadata. `docs/STAGE_PLAN.md` also now clarifies Stage 14 as a local/offline
+validation-summary report input.
 
 ## Last completed stage
 
@@ -179,9 +180,18 @@ remote URLs, and does not read private data contents, add adapters, fetch
 remote data, rank securities, recommend allocations, optimize strategies, emit
 executable advice, or claim profitability.
 
-Next checkpoint: next concrete report-input-kind readiness clarification only.
+`docs/STAGE_PLAN.md` now contains the full Stage 14 readiness specification for
+a local/offline `local_validation_summary` report-input kind. Stage 14 may
+describe only already-run local checks and generated artifacts, and it must not
+execute commands, fetch remote data, add adapters, read account or portfolio
+data, use live feeds, rank securities, recommend allocations, optimize
+strategies, emit executable advice, imply production readiness, or claim
+profitability.
 
-Exact next prompt: `Use Codex Long Session Governance. Continue continuous staged autopilot from the verified current handoff. Clarify only the next concrete local/offline report-input kind in docs/STAGE_PLAN.md; do not implement it yet, and do not add new market-data adapters, broker integration, credentials, account data, portfolio data, live quote feeds, paid-vendor data, WebSockets, remote fetching, production endpoints, strategy optimization, security ranking, allocation advice, executable advice, unsupported data redistribution, or profitability claims.`
+Next checkpoint: Stage 14 local validation-summary report-input implementation
+only.
+
+Exact next prompt: `Use Codex Long Session Governance. Continue continuous staged autopilot from the verified current handoff. Implement only the Stage 14 local/offline local_validation_summary report-input kind for the paper report pack, with offline tests and docs updates; do not execute commands from report inputs, and do not add new market-data adapters, broker integration, credentials, account data, portfolio data, live quote feeds, paid-vendor data, WebSockets, remote fetching, production endpoints, strategy optimization, security ranking, allocation advice, executable advice, production-readiness claims, unsupported data redistribution, or profitability claims.`
 
 ## Important files
 
@@ -370,22 +380,23 @@ a stop gate is triggered.
 
 ## Next recommended stage
 
-Next concrete report-input-kind readiness clarification only. Start only after
-reconfirming clean synced `main`, CI, branch protection, required `Validate`
-status, local validation, and whether the owner-direct fast path or PR path
-applies.
+Stage 14 local validation-summary report-input implementation only. Start only
+after reconfirming clean synced `main`, CI, branch protection, required
+`Validate` status, local validation, and whether the owner-direct fast path or
+PR path applies.
 
 ## Exact next prompt suggestion
 
 Use Codex Long Session Governance. Continue continuous staged autopilot from
-the verified current handoff. Clarify only the next concrete local/offline
-report-input kind in `docs/STAGE_PLAN.md`; do not implement it yet, and do not
-add new market-data adapters, broker integration, credentials, account data,
-portfolio data, live quote feeds, paid-vendor data, WebSockets, remote
+the verified current handoff. Implement only the Stage 14 local/offline
+`local_validation_summary` report-input kind for the paper report pack, with
+offline tests and docs updates; do not execute commands from report inputs, and
+do not add new market-data adapters, broker integration, credentials, account
+data, portfolio data, live quote feeds, paid-vendor data, WebSockets, remote
 fetching, production endpoints, strategy optimization, security ranking,
-allocation advice, executable advice, unsupported data redistribution, or
-profitability claims.
+allocation advice, executable advice, production-readiness claims, unsupported
+data redistribution, or profitability claims.
 
 ## Last updated timestamp
 
-2026-06-24 22:51:02 -07:00
+2026-06-24 22:56:19 -07:00

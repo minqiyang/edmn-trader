@@ -343,6 +343,19 @@ local run labels, file paths, observed decision counts, not-supplied inputs, and
 limitation notes while avoiding ranking, allocation advice, optimization,
 executable advice, or profitability framing.
 
+## Stage 14 readiness clarification
+
+After Stage 13, the next safe report-input kind is validation metadata, not new
+data access. The clarified Stage 14 boundary allows a local validation-summary
+descriptor to record checks the user already ran and artifacts the report pack
+already produced.
+
+The key boundary is that report inputs are descriptive data, not instructions.
+Stage 14 may render command labels, statuses, artifact paths, timestamps, and
+limitation notes, but it must not execute commands, fetch remote data, imply
+production readiness, optimize strategies, produce advice, or claim
+profitability.
+
 ## Interview narrative
 
 A concise way to explain the current project:
