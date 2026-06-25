@@ -1391,3 +1391,66 @@ Next-stage boundary: implementation may add the local methodology-notes input
 kind only within the local/offline report-pack path and must not add command
 execution, remote fetches, new adapters, production endpoints, ranking,
 allocation, optimization, executable advice, or production-readiness claims.
+
+## Stage 17: Local data-dictionary report input, local/offline only
+
+Purpose: clarify the next concrete report-input kind after Stage 16: a local
+data-dictionary input that records reviewer-supplied field definitions, units,
+source paths, rights/sensitivity labels, and caveats for report-pack inputs
+without reading raw local data contents, fetching data, ranking fields, or
+producing executable advice.
+
+Deliverables: Stage 17 implementation may add a `local_data_dictionary` input
+kind to the report-input manifest, parse a local data-dictionary descriptor,
+render a descriptive report section, add offline tests, and update limitation
+notes.
+
+Allowed scope:
+
+- Use a local descriptor file only.
+- Treat the descriptor as reviewer-supplied field metadata, not as raw data
+  ingestion, schema enforcement, validation execution, or recommendation logic.
+- Describe only field labels, local source paths, data type labels, units,
+  definitions, rights/sensitivity labels, and limitation notes.
+- Reject remote URLs and secret-like fields.
+- Preserve separation between observed report metrics, supplied assumptions,
+  fundamentals, manifest metadata, comparison metadata, validation metadata,
+  review notes, methodology notes, data-dictionary metadata, and limitations.
+- Label missing optional data-dictionary inputs as not supplied.
+
+Acceptance checks:
+
+- The implementation remains local/offline and deterministic.
+- The report pack does not execute commands, read secrets, read raw private
+  data contents, read account data, read portfolio data, fetch remote data, use
+  live feeds, inspect paid-vendor or proprietary datasets, or infer private
+  values from referenced files.
+- The output does not rank securities, recommend allocations, optimize
+  strategies, select a best field/source/run, emit executable advice, imply
+  production readiness, or claim profitability.
+- Missing optional data-dictionary inputs produce explicit not-supplied text
+  instead of inferred values.
+- Tests use local descriptors and generated project artifacts only.
+
+Validation commands:
+
+```bash
+python -m pip install -e ".[dev]"
+pytest
+ruff check .
+python scripts/01_replay_orderbook_fixture.py
+```
+
+Explicit non-goals: no command execution from report inputs, no raw private
+data reads, no new market-data adapters, no remote fetching, no broker
+integration, no credentials, no account or portfolio data, no live quote feeds,
+no paid-vendor market data, no WebSockets, no production endpoints, no strategy
+optimization, no security ranking, no allocation advice, no executable advice,
+no production readiness claim, no unsupported data redistribution, and no
+profitability claims.
+
+Next-stage boundary: implementation may add the local data-dictionary input
+kind only within the local/offline report-pack path and must not add command
+execution, raw local data reads, remote fetches, new adapters, production
+endpoints, ranking, allocation, optimization, executable advice, or
+production-readiness claims.

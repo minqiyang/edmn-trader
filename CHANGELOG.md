@@ -6,6 +6,10 @@ numbers while the repository is still in early research scaffolding.
 
 ## Unreleased
 
+- Clarified Stage 17 readiness for a local/offline `local_data_dictionary`
+  report-input kind that records field definitions, units, source paths,
+  rights/sensitivity labels, and caveats without reading raw private data
+  contents, fetching remote data, or producing advice.
 - Added Stage 16 local/offline `local_methodology_notes` report-input support
   to the paper report pack, with descriptor Markdown output, missing-input
   disclosure, and rejection of secret-like fields and remote URLs.
