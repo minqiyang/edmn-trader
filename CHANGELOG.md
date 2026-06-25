@@ -6,6 +6,9 @@ numbers while the repository is still in early research scaffolding.
 
 ## Unreleased
 
+- Added Stage 13 local/offline `local_run_comparison` report-input support to
+  the paper report pack, with descriptor Markdown output, missing-input
+  disclosure, and rejection of secret-like fields and remote URLs.
 - Clarified Stage 13 readiness for a local/offline `local_run_comparison`
   report-input kind that compares already generated project outputs without
   adding remote fetching, new adapters, ranking, allocation advice, executable
