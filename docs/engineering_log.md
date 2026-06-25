@@ -369,6 +369,18 @@ summaries describe checks and artifacts supplied by the user, which keeps the
 report useful for local review without turning it into a production-readiness
 claim or advice system.
 
+## Stage 15 readiness clarification
+
+After Stage 14, the next safe report-input kind is human review metadata. The
+clarified Stage 15 boundary allows a local review-notes descriptor to record
+reviewer-supplied notes, caveats, source paths, follow-up questions, and
+limitations.
+
+The boundary stays narrow: review notes are not a way to ingest private data or
+produce recommendations. Stage 15 should render local notes as descriptive
+context while avoiding command execution, remote fetching, ranking, allocation
+advice, production-readiness claims, and profitability framing.
+
 ## Interview narrative
 
 A concise way to explain the current project:
