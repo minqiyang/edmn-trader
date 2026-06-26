@@ -6,6 +6,10 @@ numbers while the repository is still in early research scaffolding.
 
 ## Unreleased
 
+- Added Stage 29 local/offline `local_decision_log` report-input support to
+  the paper report pack, with descriptor Markdown output, missing-input
+  disclosure, and rejection of secret-like fields, source-content/excerpt
+  fields, and remote URLs.
 - Completed the compact governance audit after Stage 29 readiness, confirming
   synced `main`, passing `Validate`, branch protection, no open PRs, and no
   drift before continuing to Stage 29 implementation.
