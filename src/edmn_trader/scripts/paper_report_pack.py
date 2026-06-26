@@ -50,6 +50,7 @@ class PaperReportPack:
     reproducibility_checklist_step_count: int
     risk_review_entry_count: int
     data_rights_review_entry_count: int
+    artifact_inventory_entry_count: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -310,6 +311,27 @@ class MissingDataRightsReviewInput:
     local_path: str
 
 
+@dataclass(frozen=True, slots=True)
+class LocalArtifactInventoryEntry:
+    """One descriptive local artifact-inventory entry."""
+
+    source_label: str
+    artifact_label: str
+    artifact_type_label: str
+    local_path: str
+    generation_source_label: str
+    intended_report_use: str
+    limitation_note: str
+
+
+@dataclass(frozen=True, slots=True)
+class MissingArtifactInventoryInput:
+    """Optional local artifact-inventory descriptor that was not supplied."""
+
+    display_label: str
+    local_path: str
+
+
 VALIDATION_SUMMARY_STATUSES = frozenset(("pass", "fail", "skipped"))
 SOURCE_CONTENT_FIELDS = frozenset(
     (
@@ -390,6 +412,10 @@ def generate_paper_report_pack(pack_input: PaperReportPackInput) -> PaperReportP
         pack_input.report_input_manifest,
         manifest_entries,
     )
+    artifact_inventory_entries, missing_artifact_inventory = _read_artifact_inventory(
+        pack_input.report_input_manifest,
+        manifest_entries,
+    )
     output_path = pack_input.output_dir / "report_pack.md"
     output_path.write_text(
         _render_markdown(
@@ -422,6 +448,8 @@ def generate_paper_report_pack(pack_input: PaperReportPackInput) -> PaperReportP
             missing_risk_review=missing_risk_review,
             data_rights_entries=data_rights_entries,
             missing_data_rights=missing_data_rights,
+            artifact_inventory_entries=artifact_inventory_entries,
+            missing_artifact_inventory=missing_artifact_inventory,
         ),
         encoding="utf-8",
         newline="\n",
@@ -444,6 +472,7 @@ def generate_paper_report_pack(pack_input: PaperReportPackInput) -> PaperReportP
         reproducibility_checklist_step_count=len(reproducibility_steps),
         risk_review_entry_count=len(risk_review_entries),
         data_rights_review_entry_count=len(data_rights_entries),
+        artifact_inventory_entry_count=len(artifact_inventory_entries),
     )
 
 
@@ -469,6 +498,7 @@ def render_summary(pack: PaperReportPack) -> str:
             f"reproducibility_checklist_steps={pack.reproducibility_checklist_step_count}",
             f"risk_review_entries={pack.risk_review_entry_count}",
             f"data_rights_review_entries={pack.data_rights_review_entry_count}",
+            f"artifact_inventory_entries={pack.artifact_inventory_entry_count}",
             "limitations=local/offline pack; descriptive only; no profitability claims",
         )
     )
@@ -1892,6 +1922,115 @@ def _parse_data_rights_review_entry(
     )
 
 
+def _read_artifact_inventory(
+    manifest_path: Path | None,
+    manifest_entries: tuple[ReportInputManifestEntry, ...],
+) -> tuple[
+    tuple[LocalArtifactInventoryEntry, ...],
+    tuple[MissingArtifactInventoryInput, ...],
+]:
+    if manifest_path is None:
+        return (), ()
+
+    artifact_entries: list[LocalArtifactInventoryEntry] = []
+    missing: list[MissingArtifactInventoryInput] = []
+    for entry in manifest_entries:
+        if entry.input_kind != "local_artifact_inventory":
+            continue
+        descriptor_path = _resolve_manifest_local_path(manifest_path, entry.local_path)
+        if not descriptor_path.exists():
+            if entry.required:
+                msg = (
+                    f"{manifest_path}: required local artifact-inventory input is "
+                    f"missing: {entry.local_path}"
+                )
+                raise ValueError(msg)
+            missing.append(
+                MissingArtifactInventoryInput(
+                    display_label=entry.display_label,
+                    local_path=entry.local_path,
+                )
+            )
+            continue
+
+        artifact_entries.extend(
+            _read_artifact_inventory_descriptor(
+                descriptor_path,
+                source_label=entry.display_label,
+            )
+        )
+    return tuple(artifact_entries), tuple(missing)
+
+
+def _read_artifact_inventory_descriptor(
+    path: Path, *, source_label: str
+) -> tuple[LocalArtifactInventoryEntry, ...]:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        msg = f"{path}: local artifact-inventory descriptor must contain a JSON object"
+        raise ValueError(msg)
+    _reject_secret_like_fields(payload, path=path)
+    _reject_source_content_fields(payload, path=path, descriptor_label="artifact-inventory")
+
+    artifacts = payload.get("artifacts")
+    if not isinstance(artifacts, list):
+        msg = f"{path}: local artifact-inventory descriptor must contain an artifacts list"
+        raise ValueError(msg)
+
+    parsed_artifacts: list[LocalArtifactInventoryEntry] = []
+    for index, item in enumerate(artifacts, start=1):
+        if not isinstance(item, dict):
+            msg = f"{path}: local artifact-inventory entry {index} must be an object"
+            raise ValueError(msg)
+        _reject_secret_like_fields(item, path=path)
+        _reject_source_content_fields(item, path=path, descriptor_label="artifact-inventory")
+        parsed_artifacts.append(
+            _parse_artifact_inventory_entry(
+                item,
+                path=path,
+                index=index,
+                source_label=source_label,
+            )
+        )
+    return tuple(parsed_artifacts)
+
+
+def _parse_artifact_inventory_entry(
+    item: dict[str, object], *, path: Path, index: int, source_label: str
+) -> LocalArtifactInventoryEntry:
+    required_fields = (
+        "artifact_label",
+        "artifact_type_label",
+        "local_path",
+        "generation_source_label",
+        "intended_report_use",
+        "limitation_note",
+    )
+    missing = [field for field in required_fields if field not in item]
+    if missing:
+        msg = (
+            f"{path}: local artifact-inventory entry {index} "
+            f"missing field(s): {', '.join(missing)}"
+        )
+        raise ValueError(msg)
+
+    local_path = str(item["local_path"])
+    parsed = urlparse(local_path)
+    if parsed.scheme or parsed.netloc:
+        msg = f"{path}: local artifact-inventory entry {index} remote URL is not supported"
+        raise ValueError(msg)
+
+    return LocalArtifactInventoryEntry(
+        source_label=source_label,
+        artifact_label=str(item["artifact_label"]),
+        artifact_type_label=str(item["artifact_type_label"]),
+        local_path=local_path,
+        generation_source_label=str(item["generation_source_label"]),
+        intended_report_use=str(item["intended_report_use"]),
+        limitation_note=str(item["limitation_note"]),
+    )
+
+
 def _render_markdown(
     *,
     pack_input: PaperReportPackInput,
@@ -1923,6 +2062,8 @@ def _render_markdown(
     missing_risk_review: tuple[MissingRiskReviewInput, ...],
     data_rights_entries: tuple[LocalDataRightsReviewEntry, ...],
     missing_data_rights: tuple[MissingDataRightsReviewInput, ...],
+    artifact_inventory_entries: tuple[LocalArtifactInventoryEntry, ...],
+    missing_artifact_inventory: tuple[MissingArtifactInventoryInput, ...],
 ) -> str:
     return "\n".join(
         (
@@ -2018,6 +2159,13 @@ def _render_markdown(
             "## Local Data Rights Review",
             "",
             _render_data_rights_review(data_rights_entries, missing_data_rights),
+            "",
+            "## Local Artifact Inventory",
+            "",
+            _render_artifact_inventory(
+                artifact_inventory_entries,
+                missing_artifact_inventory,
+            ),
             "",
             "## SEC Fundamentals",
             "",
@@ -2378,6 +2526,33 @@ def _render_data_rights_review(
     rows.extend(
         f"| {missing_input.display_label} | not supplied | not supplied | "
         f"not supplied | not supplied | {missing_input.local_path} | not supplied |"
+        for missing_input in missing_inputs
+    )
+    return "\n".join(rows)
+
+
+def _render_artifact_inventory(
+    artifact_entries: tuple[LocalArtifactInventoryEntry, ...],
+    missing_inputs: tuple[MissingArtifactInventoryInput, ...],
+) -> str:
+    if not artifact_entries and not missing_inputs:
+        return "| input | status |\n| --- | --- |\n| Local artifact inventory | not supplied |"
+
+    rows = [
+        "| source | artifact | artifact type | local path | generation source | "
+        "report use | limitation |",
+        "| --- | --- | --- | --- | --- | --- | --- |",
+    ]
+    rows.extend(
+        f"| {entry.source_label} | {entry.artifact_label} | "
+        f"{entry.artifact_type_label} | {entry.local_path} | "
+        f"{entry.generation_source_label} | {entry.intended_report_use} | "
+        f"{entry.limitation_note} |"
+        for entry in artifact_entries
+    )
+    rows.extend(
+        f"| {missing_input.display_label} | not supplied | not supplied | "
+        f"{missing_input.local_path} | not supplied | not supplied | not supplied |"
         for missing_input in missing_inputs
     )
     return "\n".join(rows)
