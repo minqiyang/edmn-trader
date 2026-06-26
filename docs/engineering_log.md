@@ -690,6 +690,16 @@ section labels, local evidence or artifact paths, scope notes, mitigation
 notes, and limitation notes as descriptive context without scoring limitations,
 producing advice, or implying production readiness.
 
+After Stage 27, the next safe report-input kind is an open-questions register.
+The clarified Stage 28 boundary allows a local open-questions descriptor to
+record reviewer-supplied open question labels, affected report section labels,
+local reference paths, owner labels, status labels, and limitation notes.
+
+The boundary stays descriptive. Stage 28 should make open-question metadata
+visible in the report pack without reading referenced contents, verifying
+outputs, scoring questions, approving decisions, producing advice, or implying
+production readiness.
+
 ## Interview narrative
 
 A concise way to explain the current project:
