@@ -733,6 +733,21 @@ latest `main` `Validate` run passed, branch protection still required strict
 `Validate`, there were no open pull requests, and the handoff continued to
 point at Stage 29 implementation only.
 
+## Stage 29 local decision-log input
+
+Stage 29 added support for `local_decision_log` manifest entries in the paper
+report pack. The implementation reads a local decision-log descriptor as
+metadata, renders a separate Markdown section, reports missing optional
+decision-log descriptors as not supplied, and rejects secret-like fields,
+source-content or excerpt fields, and remote URLs.
+
+The report pack still does not read artifact/evidence/source files referenced
+by the descriptor, verify outputs, verify local environments, or approve
+decisions. It renders reviewer-supplied decision labels, decision context
+labels, local reference paths, owner labels, status labels, rationale notes,
+and limitation notes as descriptive context without scoring decisions,
+producing advice, or implying production readiness.
+
 ## Interview narrative
 
 A concise way to explain the current project:

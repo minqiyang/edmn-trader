@@ -1771,6 +1771,117 @@ def test_paper_report_pack_rejects_unsafe_open_questions_descriptor(
         )
 
 
+def test_paper_report_pack_renders_local_decision_log_input(tmp_path: Path) -> None:
+    decision_log_path = _write_decision_log_descriptor(tmp_path)
+    manifest_path = _write_report_input_manifest(
+        tmp_path,
+        local_path=decision_log_path.name,
+        input_kind="local_decision_log",
+        display_label="Local decision log",
+    )
+    output_dir = tmp_path / "pack"
+
+    pack = generate_paper_report_pack(
+        PaperReportPackInput(
+            market_maker_logs=(_write_stage_6_log(tmp_path),),
+            report_input_manifest=manifest_path,
+            output_dir=output_dir,
+        )
+    )
+
+    assert pack.decision_log_entry_count == 2
+    text = (output_dir / "report_pack.md").read_text(encoding="utf-8")
+    assert "Local Decision Log" in text
+    assert "Keep report descriptive" in text
+    assert "Report boundaries" in text
+    assert "docs/STAGE_PLAN.md" in text
+    assert "reviewer" in text
+    assert "accepted" in text
+    assert "recommend" not in text.lower()
+
+
+def test_paper_report_pack_marks_missing_optional_decision_log_not_supplied(
+    tmp_path: Path,
+) -> None:
+    manifest_path = _write_report_input_manifest(
+        tmp_path,
+        local_path="missing-decision-log.json",
+        input_kind="local_decision_log",
+        display_label="Missing decision log",
+    )
+    output_dir = tmp_path / "pack"
+
+    generate_paper_report_pack(
+        PaperReportPackInput(
+            market_maker_logs=(_write_stage_6_log(tmp_path),),
+            report_input_manifest=manifest_path,
+            output_dir=output_dir,
+        )
+    )
+
+    text = (output_dir / "report_pack.md").read_text(encoding="utf-8")
+    assert "Local Decision Log" in text
+    assert "Missing decision log | not supplied" in text
+
+
+def test_paper_report_pack_rejects_unsafe_decision_log_descriptor(
+    tmp_path: Path,
+) -> None:
+    secret_descriptor_path = _write_decision_log_descriptor(
+        tmp_path,
+        extra_decision_field={"secret_key": "should-not-be-read"},
+    )
+    secret_manifest_path = _write_report_input_manifest(
+        tmp_path,
+        local_path=secret_descriptor_path.name,
+        input_kind="local_decision_log",
+    )
+    with pytest.raises(ValueError, match="secret-like"):
+        generate_paper_report_pack(
+            PaperReportPackInput(
+                market_maker_logs=(_write_stage_6_log(tmp_path),),
+                report_input_manifest=secret_manifest_path,
+                output_dir=tmp_path / "secret-decision-log-pack",
+            )
+        )
+
+    remote_descriptor_path = _write_decision_log_descriptor(
+        tmp_path,
+        reference_path="https://example.com/decisions.md",
+    )
+    remote_manifest_path = _write_report_input_manifest(
+        tmp_path,
+        local_path=remote_descriptor_path.name,
+        input_kind="local_decision_log",
+    )
+    with pytest.raises(ValueError, match="remote URL"):
+        generate_paper_report_pack(
+            PaperReportPackInput(
+                market_maker_logs=(_write_stage_6_log(tmp_path),),
+                report_input_manifest=remote_manifest_path,
+                output_dir=tmp_path / "remote-decision-log-pack",
+            )
+        )
+
+    excerpt_descriptor_path = _write_decision_log_descriptor(
+        tmp_path,
+        extra_decision_field={"text": "private decision contents"},
+    )
+    excerpt_manifest_path = _write_report_input_manifest(
+        tmp_path,
+        local_path=excerpt_descriptor_path.name,
+        input_kind="local_decision_log",
+    )
+    with pytest.raises(ValueError, match="source-content"):
+        generate_paper_report_pack(
+            PaperReportPackInput(
+                market_maker_logs=(_write_stage_6_log(tmp_path),),
+                report_input_manifest=excerpt_manifest_path,
+                output_dir=tmp_path / "excerpt-decision-log-pack",
+            )
+        )
+
+
 def test_paper_report_pack_cli_writes_markdown(tmp_path: Path, capsys, monkeypatch) -> None:
     output_dir = tmp_path / "pack"
     manifest_path = _write_report_input_manifest(tmp_path)
@@ -2413,6 +2524,46 @@ def _write_open_questions_descriptor(
                         "owner_label": "maintainer",
                         "status_label": "not reviewed",
                         "limitation_note": "descriptive only; does not approve decisions",
+                    },
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    return descriptor_path
+
+
+def _write_decision_log_descriptor(
+    tmp_path: Path,
+    *,
+    reference_path: str = "docs/STAGE_PLAN.md",
+    extra_decision_field: dict[str, str] | None = None,
+) -> Path:
+    descriptor_path = tmp_path / "decision_log.json"
+    first_decision = {
+        "decision_label": "Keep report descriptive",
+        "decision_context_label": "Report boundaries",
+        "reference_path": reference_path,
+        "owner_label": "reviewer",
+        "status_label": "accepted",
+        "rationale_note": "metadata only; records reviewer context",
+        "limitation_note": "descriptive only; does not approve decisions",
+    }
+    if extra_decision_field:
+        first_decision.update(extra_decision_field)
+    descriptor_path.write_text(
+        json.dumps(
+            {
+                "decisions": [
+                    first_decision,
+                    {
+                        "decision_label": "Keep appendix local",
+                        "decision_context_label": "Appendix inputs",
+                        "reference_path": "outputs/report_pack.md",
+                        "owner_label": "maintainer",
+                        "status_label": "pending review",
+                        "rationale_note": "tracks local report scope",
+                        "limitation_note": "does not verify outputs",
                     },
                 ]
             }
