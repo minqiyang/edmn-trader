@@ -6,6 +6,9 @@ numbers while the repository is still in early research scaffolding.
 
 ## Unreleased
 
+- Completed the compact governance audit after Stage 30 implementation,
+  confirming synced `main`, passing `Validate`, branch protection, no open PRs,
+  and no drift before continuing to the next readiness checkpoint.
 - Added Stage 30 local/offline `local_follow_up_register` report-input support
   to the paper report pack, with descriptor Markdown output, missing-input
   disclosure, and rejection of secret-like fields, source-content/excerpt
