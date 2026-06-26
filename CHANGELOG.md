@@ -6,6 +6,10 @@ numbers while the repository is still in early research scaffolding.
 
 ## Unreleased
 
+- Clarified Stage 28 readiness for a local/offline `local_open_questions`
+  report-input kind that records open question labels, affected report
+  sections, local reference paths, owner/status labels, and limitations without
+  reading referenced contents, scoring questions, or producing advice.
 - Added Stage 27 local/offline `local_limitation_register` report-input
   support to the paper report pack, with descriptor Markdown output,
   missing-input disclosure, and rejection of secret-like fields,
