@@ -556,7 +556,7 @@ tests, changelog, engineering log, and handoff archive.
 ### Stage 24: Local data-rights-review report input, local/offline only
 
 - Status: complete.
-- Commit: pending on the Stage 24 implementation branch.
+- Commit: `7c0d3e9` (merged via PR #53 at `4e836ad`).
 - Purpose: add local reviewer-supplied data labels, rights status labels,
   permitted-use notes, restriction notes, local evidence paths, and limitation
   metadata.
