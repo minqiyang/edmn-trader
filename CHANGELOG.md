@@ -6,6 +6,11 @@ numbers while the repository is still in early research scaffolding.
 
 ## Unreleased
 
+- Clarified Stage 35 readiness for a local/offline `local_delivery_notes`
+  report-input kind that records delivery labels, related artifact paths,
+  recipient labels, delivery status labels, delivery notes, and limitations
+  without transferring files, approving distribution, verifying rights, scoring
+  delivery readiness, or producing advice.
 - Added Stage 34 local/offline `local_archive_notes` report-input support to
   the paper report pack, with descriptor Markdown output, missing-input
   disclosure, and rejection of secret-like fields, source-content/excerpt

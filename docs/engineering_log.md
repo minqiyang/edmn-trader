@@ -904,6 +904,18 @@ archive status labels, owner labels, archive notes, and limitation notes as
 descriptive context without scoring archive readiness, producing advice, or
 implying production readiness.
 
+## Stage 35 readiness clarification
+
+After Stage 34, the next safe report-input kind is delivery notes. The
+clarified Stage 35 boundary allows a local delivery-notes descriptor to record
+reviewer-supplied delivery labels, related artifact paths, recipient labels,
+delivery status labels, delivery notes, and limitation notes.
+
+The boundary stays descriptive. Stage 35 should make delivery-note metadata
+visible in the report pack without transferring files, approving distribution,
+verifying rights, reading artifact contents, scoring delivery readiness,
+producing advice, or implying production readiness.
+
 ## Interview narrative
 
 A concise way to explain the current project:
