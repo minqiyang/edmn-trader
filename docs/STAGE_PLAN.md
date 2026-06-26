@@ -503,7 +503,7 @@ tests, changelog, engineering log, and handoff archive.
 ### Stage 22: Local reproducibility-checklist report input, local/offline only
 
 - Status: complete.
-- Commit: pending on the Stage 22 implementation branch.
+- Commit: `5a20668a021400de15c3aaf30e8ea7f1889f79a1` on `main`.
 - Purpose: add local reviewer-supplied reproduction step labels, artifact
   paths, command labels, environment labels, expected output labels, and
   limitation metadata.
