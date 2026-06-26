@@ -34,7 +34,8 @@ Stage 34 local archive-notes report-input metadata is implemented.
 
 ## Last completed stage
 
-Stage 34 implementation: Local archive-notes report input, local/offline only.
+Stage 35 readiness clarification: Local delivery-notes report input,
+local/offline only.
 
 ## Stage plan status
 
@@ -829,9 +830,25 @@ reproducibility, coverage, sources, or securities, recommend allocations,
 optimize strategies, emit executable advice, imply production readiness, or
 claim profitability.
 
-Next checkpoint: report-input-kind readiness clarification only.
+`docs/STAGE_PLAN.md` now contains the full Stage 35 readiness specification for
+a local/offline `local_delivery_notes` report-input kind. Stage 35 may describe
+only reviewer-supplied delivery labels, related artifact paths, recipient
+labels, delivery status labels, delivery notes, and limitation notes, and it
+must not execute commands, run checks from report inputs, transfer files,
+approve distribution, verify rights or licenses, read artifact/evidence/source
+contents, verify outputs, verify local environments, approve decisions, read
+raw private data contents, fetch remote data, add adapters, use account or
+portfolio data, use live feeds, score or rank delivery readiness, archive
+readiness, handoffs, distribution items, versions, follow-ups, decisions, open
+questions, limitations, appendix entries, artifacts, rights status, risk,
+reproducibility, coverage, sources, or securities, recommend allocations,
+optimize strategies, emit executable advice, imply production readiness, or
+claim profitability.
 
-Exact next prompt: `Use Codex Long Session Governance. Continue continuous staged autopilot from the verified current handoff. Clarify only the next local/offline report-input kind after Stage 34 before implementation, and do not add new market-data adapters, broker integration, credentials, account data, portfolio data, live quote feeds, paid-vendor data, WebSockets, remote fetching, production endpoints, command execution from report inputs, validation execution from report inputs, follow-up execution, file movement or deletion, retention-policy decisions, artifact/evidence/source-content reads, output verification, local environment verification, distribution approval, rights/license verification, decision approval, rights/risk/reproducibility/coverage/source/security ranking, allocation advice, executable advice, production-readiness claims, unsupported data redistribution, or profitability claims.`
+Next checkpoint: mandatory compact governance audit after Stage 34 readiness,
+Stage 34 implementation, and Stage 35 readiness.
+
+Exact next prompt: `Use Codex Long Session Governance. Continue continuous staged autopilot from the verified current handoff. Run the mandatory compact governance audit after Stage 34 readiness, Stage 34 implementation, and Stage 35 readiness, and do not add new market-data adapters, broker integration, credentials, account data, portfolio data, live quote feeds, paid-vendor data, WebSockets, remote fetching, production endpoints, command execution from report inputs, validation execution from report inputs, follow-up execution, file movement, deletion, or transfer, retention-policy decisions, artifact/evidence/source-content reads, output verification, local environment verification, distribution approval, rights/license verification, decision approval, rights/risk/reproducibility/coverage/source/security ranking, allocation advice, executable advice, production-readiness claims, unsupported data redistribution, or profitability claims.`
 
 ## Important files
 
@@ -1040,26 +1057,27 @@ a stop gate is triggered.
 
 ## Next recommended stage
 
-Report-input-kind readiness clarification only. Start only after reconfirming
-clean synced `main`, CI, branch protection, required `Validate` status, local
+Mandatory compact governance audit after Stage 34 readiness, Stage 34
+implementation, and Stage 35 readiness. Start only after reconfirming clean
+synced `main`, CI, branch protection, required `Validate` status, local
 validation, and whether the owner-direct fast path or PR path applies.
 
 ## Exact next prompt suggestion
 
 Use Codex Long Session Governance. Continue continuous staged autopilot from
-the verified current handoff. Clarify only the next local/offline report-input
-kind after Stage 34 before implementation, and do not add new market-data
-adapters, broker integration, credentials, account data, portfolio data, live
-quote feeds, paid-vendor data, WebSockets, remote fetching, production
-endpoints, command execution from report inputs, validation execution from
-report inputs, follow-up execution, file movement or deletion,
-retention-policy decisions, artifact/evidence/source-content reads, output
-verification, local environment verification, distribution approval,
-rights/license verification, decision approval,
+the verified current handoff. Run the mandatory compact governance audit after
+Stage 34 readiness, Stage 34 implementation, and Stage 35 readiness, and do not
+add new market-data adapters, broker integration, credentials, account data,
+portfolio data, live quote feeds, paid-vendor data, WebSockets, remote
+fetching, production endpoints, command execution from report inputs,
+validation execution from report inputs, follow-up execution, file movement,
+deletion, or transfer, retention-policy decisions,
+artifact/evidence/source-content reads, output verification, local environment
+verification, distribution approval, rights/license verification, decision approval,
 rights/risk/reproducibility/coverage/source/security ranking, allocation
 advice, executable advice, production-readiness claims, unsupported data
 redistribution, or profitability claims.
 
 ## Last updated timestamp
 
-2026-06-26 15:55:26 -07:00
+2026-06-26 16:04:08 -07:00
