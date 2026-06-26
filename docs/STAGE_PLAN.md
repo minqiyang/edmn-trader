@@ -719,7 +719,7 @@ tests, changelog, engineering log, and handoff archive.
 ### Stage 30: Local follow-up register report input, local/offline only
 
 - Status: complete.
-- Commit: pending on the Stage 30 implementation branch.
+- Commit: `220b21e` (merged via PR #69 at `6cb9a79`).
 - Purpose: add local reviewer-supplied follow-up labels, related report
   section labels, local reference paths, owner labels, status labels, tracking
   notes, and limitation metadata.
