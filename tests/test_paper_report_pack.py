@@ -994,6 +994,119 @@ def test_paper_report_pack_rejects_unsafe_coverage_matrix_descriptor(
         )
 
 
+def test_paper_report_pack_renders_local_reproducibility_checklist_input(
+    tmp_path: Path,
+) -> None:
+    reproducibility_path = _write_reproducibility_checklist_descriptor(tmp_path)
+    manifest_path = _write_report_input_manifest(
+        tmp_path,
+        local_path=reproducibility_path.name,
+        input_kind="local_reproducibility_checklist",
+        display_label="Local reproducibility checklist",
+    )
+    output_dir = tmp_path / "pack"
+
+    pack = generate_paper_report_pack(
+        PaperReportPackInput(
+            market_maker_logs=(_write_stage_6_log(tmp_path),),
+            report_input_manifest=manifest_path,
+            output_dir=output_dir,
+        )
+    )
+
+    assert pack.reproducibility_checklist_step_count == 2
+    text = (output_dir / "report_pack.md").read_text(encoding="utf-8")
+    assert "Local Reproducibility Checklist" in text
+    assert "Generate paper report pack" in text
+    assert "report_pack.md" in text
+    assert "python scripts/10_paper_report_pack.py" in text
+    assert "Python 3.12 local dev environment" in text
+    assert "report pack markdown written locally" in text
+    assert "recommend" not in text.lower()
+
+
+def test_paper_report_pack_marks_missing_optional_reproducibility_checklist_not_supplied(
+    tmp_path: Path,
+) -> None:
+    manifest_path = _write_report_input_manifest(
+        tmp_path,
+        local_path="missing-reproducibility-checklist.json",
+        input_kind="local_reproducibility_checklist",
+        display_label="Missing reproducibility checklist",
+    )
+    output_dir = tmp_path / "pack"
+
+    generate_paper_report_pack(
+        PaperReportPackInput(
+            market_maker_logs=(_write_stage_6_log(tmp_path),),
+            report_input_manifest=manifest_path,
+            output_dir=output_dir,
+        )
+    )
+
+    text = (output_dir / "report_pack.md").read_text(encoding="utf-8")
+    assert "Local Reproducibility Checklist" in text
+    assert "Missing reproducibility checklist | not supplied" in text
+
+
+def test_paper_report_pack_rejects_unsafe_reproducibility_checklist_descriptor(
+    tmp_path: Path,
+) -> None:
+    secret_descriptor_path = _write_reproducibility_checklist_descriptor(
+        tmp_path,
+        extra_step_field={"api_token": "should-not-be-read"},
+    )
+    secret_manifest_path = _write_report_input_manifest(
+        tmp_path,
+        local_path=secret_descriptor_path.name,
+        input_kind="local_reproducibility_checklist",
+    )
+    with pytest.raises(ValueError, match="secret-like"):
+        generate_paper_report_pack(
+            PaperReportPackInput(
+                market_maker_logs=(_write_stage_6_log(tmp_path),),
+                report_input_manifest=secret_manifest_path,
+                output_dir=tmp_path / "secret-reproducibility-pack",
+            )
+        )
+
+    remote_descriptor_path = _write_reproducibility_checklist_descriptor(
+        tmp_path,
+        artifact_path="https://example.com/report.md",
+    )
+    remote_manifest_path = _write_report_input_manifest(
+        tmp_path,
+        local_path=remote_descriptor_path.name,
+        input_kind="local_reproducibility_checklist",
+    )
+    with pytest.raises(ValueError, match="remote URL"):
+        generate_paper_report_pack(
+            PaperReportPackInput(
+                market_maker_logs=(_write_stage_6_log(tmp_path),),
+                report_input_manifest=remote_manifest_path,
+                output_dir=tmp_path / "remote-reproducibility-pack",
+            )
+        )
+
+    excerpt_descriptor_path = _write_reproducibility_checklist_descriptor(
+        tmp_path,
+        extra_step_field={"text": "private artifact contents"},
+    )
+    excerpt_manifest_path = _write_report_input_manifest(
+        tmp_path,
+        local_path=excerpt_descriptor_path.name,
+        input_kind="local_reproducibility_checklist",
+    )
+    with pytest.raises(ValueError, match="source-content"):
+        generate_paper_report_pack(
+            PaperReportPackInput(
+                market_maker_logs=(_write_stage_6_log(tmp_path),),
+                report_input_manifest=excerpt_manifest_path,
+                output_dir=tmp_path / "excerpt-reproducibility-pack",
+            )
+        )
+
+
 def test_paper_report_pack_cli_writes_markdown(tmp_path: Path, capsys, monkeypatch) -> None:
     output_dir = tmp_path / "pack"
     manifest_path = _write_report_input_manifest(tmp_path)
@@ -1372,6 +1485,44 @@ def _write_coverage_matrix_descriptor(
                         "validation_label": "not executed from descriptor",
                         "coverage_note": "inputs are listed as supplied or not supplied",
                         "limitation_note": "descriptive coverage only",
+                    },
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    return descriptor_path
+
+
+def _write_reproducibility_checklist_descriptor(
+    tmp_path: Path,
+    *,
+    artifact_path: str = "report_pack.md",
+    extra_step_field: dict[str, str] | None = None,
+) -> Path:
+    descriptor_path = tmp_path / "reproducibility_checklist.json"
+    first_step = {
+        "step_label": "Generate paper report pack",
+        "artifact_path": artifact_path,
+        "command_label": "python scripts/10_paper_report_pack.py",
+        "environment_label": "Python 3.12 local dev environment",
+        "expected_output_label": "report pack markdown written locally",
+        "limitation_note": "metadata only; does not execute commands",
+    }
+    if extra_step_field:
+        first_step.update(extra_step_field)
+    descriptor_path.write_text(
+        json.dumps(
+            {
+                "steps": [
+                    first_step,
+                    {
+                        "step_label": "Run local validation",
+                        "artifact_path": "pytest.log",
+                        "command_label": "pytest",
+                        "environment_label": "local editable install",
+                        "expected_output_label": "test output already supplied",
+                        "limitation_note": "descriptive only; does not verify output",
                     },
                 ]
             }

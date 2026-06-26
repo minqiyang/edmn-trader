@@ -47,6 +47,7 @@ class PaperReportPack:
     term_glossary_entry_count: int
     assumption_register_entry_count: int
     coverage_matrix_entry_count: int
+    reproducibility_checklist_step_count: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -244,6 +245,27 @@ class MissingCoverageMatrixInput:
     local_path: str
 
 
+@dataclass(frozen=True, slots=True)
+class LocalReproducibilityChecklistStep:
+    """One descriptive local reproducibility-checklist step."""
+
+    source_label: str
+    step_label: str
+    artifact_path: str
+    command_label: str
+    environment_label: str
+    expected_output_label: str
+    limitation_note: str
+
+
+@dataclass(frozen=True, slots=True)
+class MissingReproducibilityChecklistInput:
+    """Optional local reproducibility-checklist descriptor that was not supplied."""
+
+    display_label: str
+    local_path: str
+
+
 VALIDATION_SUMMARY_STATUSES = frozenset(("pass", "fail", "skipped"))
 SOURCE_CONTENT_FIELDS = frozenset(
     (
@@ -312,6 +334,10 @@ def generate_paper_report_pack(pack_input: PaperReportPackInput) -> PaperReportP
         pack_input.report_input_manifest,
         manifest_entries,
     )
+    reproducibility_steps, missing_reproducibility = _read_reproducibility_checklist(
+        pack_input.report_input_manifest,
+        manifest_entries,
+    )
     output_path = pack_input.output_dir / "report_pack.md"
     output_path.write_text(
         _render_markdown(
@@ -338,6 +364,8 @@ def generate_paper_report_pack(pack_input: PaperReportPackInput) -> PaperReportP
             missing_assumption_register=missing_assumption_register,
             coverage_matrix_entries=coverage_matrix_entries,
             missing_coverage_matrix=missing_coverage_matrix,
+            reproducibility_steps=reproducibility_steps,
+            missing_reproducibility=missing_reproducibility,
         ),
         encoding="utf-8",
         newline="\n",
@@ -357,6 +385,7 @@ def generate_paper_report_pack(pack_input: PaperReportPackInput) -> PaperReportP
         term_glossary_entry_count=len(term_glossary_entries),
         assumption_register_entry_count=len(assumption_register_entries),
         coverage_matrix_entry_count=len(coverage_matrix_entries),
+        reproducibility_checklist_step_count=len(reproducibility_steps),
     )
 
 
@@ -379,6 +408,7 @@ def render_summary(pack: PaperReportPack) -> str:
             f"term_glossary_entries={pack.term_glossary_entry_count}",
             f"assumption_register_entries={pack.assumption_register_entry_count}",
             f"coverage_matrix_entries={pack.coverage_matrix_entry_count}",
+            f"reproducibility_checklist_steps={pack.reproducibility_checklist_step_count}",
             "limitations=local/offline pack; descriptive only; no profitability claims",
         )
     )
@@ -1467,6 +1497,126 @@ def _parse_coverage_matrix_entry(
     )
 
 
+def _read_reproducibility_checklist(
+    manifest_path: Path | None,
+    manifest_entries: tuple[ReportInputManifestEntry, ...],
+) -> tuple[
+    tuple[LocalReproducibilityChecklistStep, ...],
+    tuple[MissingReproducibilityChecklistInput, ...],
+]:
+    if manifest_path is None:
+        return (), ()
+
+    steps: list[LocalReproducibilityChecklistStep] = []
+    missing: list[MissingReproducibilityChecklistInput] = []
+    for entry in manifest_entries:
+        if entry.input_kind != "local_reproducibility_checklist":
+            continue
+        descriptor_path = _resolve_manifest_local_path(manifest_path, entry.local_path)
+        if not descriptor_path.exists():
+            if entry.required:
+                msg = (
+                    f"{manifest_path}: required local reproducibility-checklist "
+                    f"input is missing: {entry.local_path}"
+                )
+                raise ValueError(msg)
+            missing.append(
+                MissingReproducibilityChecklistInput(
+                    display_label=entry.display_label,
+                    local_path=entry.local_path,
+                )
+            )
+            continue
+
+        steps.extend(
+            _read_reproducibility_checklist_descriptor(
+                descriptor_path,
+                source_label=entry.display_label,
+            )
+        )
+    return tuple(steps), tuple(missing)
+
+
+def _read_reproducibility_checklist_descriptor(
+    path: Path, *, source_label: str
+) -> tuple[LocalReproducibilityChecklistStep, ...]:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        msg = f"{path}: local reproducibility-checklist descriptor must contain a JSON object"
+        raise ValueError(msg)
+    _reject_secret_like_fields(payload, path=path)
+    _reject_source_content_fields(
+        payload,
+        path=path,
+        descriptor_label="reproducibility-checklist",
+    )
+
+    steps = payload.get("steps")
+    if not isinstance(steps, list):
+        msg = f"{path}: local reproducibility-checklist descriptor must contain a steps list"
+        raise ValueError(msg)
+
+    parsed_steps: list[LocalReproducibilityChecklistStep] = []
+    for index, item in enumerate(steps, start=1):
+        if not isinstance(item, dict):
+            msg = f"{path}: local reproducibility-checklist step {index} must be an object"
+            raise ValueError(msg)
+        _reject_secret_like_fields(item, path=path)
+        _reject_source_content_fields(
+            item,
+            path=path,
+            descriptor_label="reproducibility-checklist",
+        )
+        parsed_steps.append(
+            _parse_reproducibility_checklist_step(
+                item,
+                path=path,
+                index=index,
+                source_label=source_label,
+            )
+        )
+    return tuple(parsed_steps)
+
+
+def _parse_reproducibility_checklist_step(
+    item: dict[str, object], *, path: Path, index: int, source_label: str
+) -> LocalReproducibilityChecklistStep:
+    required_fields = (
+        "step_label",
+        "artifact_path",
+        "command_label",
+        "environment_label",
+        "expected_output_label",
+        "limitation_note",
+    )
+    missing = [field for field in required_fields if field not in item]
+    if missing:
+        msg = (
+            f"{path}: local reproducibility-checklist step {index} "
+            f"missing field(s): {', '.join(missing)}"
+        )
+        raise ValueError(msg)
+
+    artifact_path = str(item["artifact_path"])
+    parsed = urlparse(artifact_path)
+    if parsed.scheme or parsed.netloc:
+        msg = (
+            f"{path}: local reproducibility-checklist step {index} "
+            "remote URL is not supported"
+        )
+        raise ValueError(msg)
+
+    return LocalReproducibilityChecklistStep(
+        source_label=source_label,
+        step_label=str(item["step_label"]),
+        artifact_path=artifact_path,
+        command_label=str(item["command_label"]),
+        environment_label=str(item["environment_label"]),
+        expected_output_label=str(item["expected_output_label"]),
+        limitation_note=str(item["limitation_note"]),
+    )
+
+
 def _render_markdown(
     *,
     pack_input: PaperReportPackInput,
@@ -1492,6 +1642,8 @@ def _render_markdown(
     missing_assumption_register: tuple[MissingAssumptionRegisterInput, ...],
     coverage_matrix_entries: tuple[LocalCoverageMatrixEntry, ...],
     missing_coverage_matrix: tuple[MissingCoverageMatrixInput, ...],
+    reproducibility_steps: tuple[LocalReproducibilityChecklistStep, ...],
+    missing_reproducibility: tuple[MissingReproducibilityChecklistInput, ...],
 ) -> str:
     return "\n".join(
         (
@@ -1572,6 +1724,13 @@ def _render_markdown(
             "## Local Coverage Matrix",
             "",
             _render_coverage_matrix(coverage_matrix_entries, missing_coverage_matrix),
+            "",
+            "## Local Reproducibility Checklist",
+            "",
+            _render_reproducibility_checklist(
+                reproducibility_steps,
+                missing_reproducibility,
+            ),
             "",
             "## SEC Fundamentals",
             "",
@@ -1847,6 +2006,35 @@ def _render_coverage_matrix(
         f"{entry.input_label} | {entry.validation_label} | {entry.coverage_note} | "
         f"{entry.limitation_note} |"
         for entry in coverage_entries
+    )
+    rows.extend(
+        f"| {missing_input.display_label} | not supplied | {missing_input.local_path} | "
+        "not supplied | not supplied | not supplied | not supplied |"
+        for missing_input in missing_inputs
+    )
+    return "\n".join(rows)
+
+
+def _render_reproducibility_checklist(
+    steps: tuple[LocalReproducibilityChecklistStep, ...],
+    missing_inputs: tuple[MissingReproducibilityChecklistInput, ...],
+) -> str:
+    if not steps and not missing_inputs:
+        return (
+            "| input | status |\n"
+            "| --- | --- |\n"
+            "| Local reproducibility checklist | not supplied |"
+        )
+
+    rows = [
+        "| source | step | artifact path | command | environment | expected output | limitation |",
+        "| --- | --- | --- | --- | --- | --- | --- |",
+    ]
+    rows.extend(
+        f"| {step.source_label} | {step.step_label} | {step.artifact_path} | "
+        f"{step.command_label} | {step.environment_label} | "
+        f"{step.expected_output_label} | {step.limitation_note} |"
+        for step in steps
     )
     rows.extend(
         f"| {missing_input.display_label} | not supplied | {missing_input.local_path} | "

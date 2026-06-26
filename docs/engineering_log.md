@@ -549,6 +549,20 @@ visible in the report pack without executing commands, reading artifact or
 source contents, verifying local environments or outputs, fetching remote data,
 scoring reproducibility, producing advice, or implying production readiness.
 
+## Stage 22 local reproducibility-checklist input
+
+Stage 22 added support for `local_reproducibility_checklist` manifest entries
+in the paper report pack. The implementation reads a local reproducibility
+descriptor as metadata, renders a separate Markdown section, reports missing
+optional reproducibility-checklist descriptors as not supplied, and rejects
+secret-like fields, source-content or excerpt fields, and remote URLs.
+
+The report pack still does not execute commands or read artifact/source files
+referenced by the descriptor. It renders reviewer-supplied reproduction step
+labels, artifact paths, command labels, environment labels, expected output
+labels, and limitation notes as descriptive context without verifying outputs,
+scoring reproducibility, producing advice, or implying production readiness.
+
 ## Interview narrative
 
 A concise way to explain the current project:

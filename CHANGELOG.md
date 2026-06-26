@@ -6,6 +6,10 @@ numbers while the repository is still in early research scaffolding.
 
 ## Unreleased
 
+- Added Stage 22 local/offline `local_reproducibility_checklist`
+  report-input support to the paper report pack, with descriptor Markdown
+  output, missing-input disclosure, and rejection of secret-like fields,
+  source-content/excerpt fields, and remote URLs.
 - Clarified Stage 22 readiness for a local/offline
   `local_reproducibility_checklist` report-input kind that records
   reproduction step labels, artifact paths, command labels, environment labels,
