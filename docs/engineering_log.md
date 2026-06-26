@@ -624,6 +624,21 @@ metadata visible in the report pack without reading artifact contents,
 verifying outputs, verifying local environments, ranking artifacts, producing
 advice, or implying production readiness.
 
+## Stage 25 local artifact-inventory input
+
+Stage 25 added support for `local_artifact_inventory` manifest entries in the
+paper report pack. The implementation reads a local artifact-inventory
+descriptor as metadata, renders a separate Markdown section, reports missing
+optional artifact-inventory descriptors as not supplied, and rejects
+secret-like fields, source-content or excerpt fields, and remote URLs.
+
+The report pack still does not read artifact/source files referenced by the
+descriptor, verify outputs, or verify local environments. It renders
+reviewer-supplied generated artifact labels, artifact type labels, local paths,
+generation-source labels, intended report-use notes, and limitation notes as
+descriptive context without ranking artifacts, producing advice, or implying
+production readiness.
+
 ## Interview narrative
 
 A concise way to explain the current project:
