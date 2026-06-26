@@ -758,6 +758,22 @@ The boundary stays descriptive. Stage 30 should make follow-up metadata visible
 in the report pack without reading referenced contents, executing follow-ups,
 scoring follow-ups, producing advice, or implying production readiness.
 
+## Stage 30 local follow-up register input
+
+Stage 30 added support for `local_follow_up_register` manifest entries in the
+paper report pack. The implementation reads a local follow-up-register
+descriptor as metadata, renders a separate Markdown section, reports missing
+optional follow-up descriptors as not supplied, and rejects secret-like fields,
+source-content or excerpt fields, and remote URLs.
+
+The report pack still does not read artifact/evidence/source files referenced
+by the descriptor, verify outputs, verify local environments, execute
+follow-ups, or approve decisions. It renders reviewer-supplied follow-up
+labels, related report section labels, local reference paths, owner labels,
+status labels, tracking notes, and limitation notes as descriptive context
+without scoring follow-ups, producing advice, or implying production
+readiness.
+
 ## Interview narrative
 
 A concise way to explain the current project:

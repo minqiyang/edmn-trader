@@ -55,6 +55,7 @@ class PaperReportPack:
     limitation_register_entry_count: int
     open_questions_entry_count: int
     decision_log_entry_count: int
+    follow_up_register_entry_count: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -420,6 +421,28 @@ class MissingDecisionLogInput:
     local_path: str
 
 
+@dataclass(frozen=True, slots=True)
+class LocalFollowUpRegisterEntry:
+    """One descriptive local follow-up register entry."""
+
+    source_label: str
+    follow_up_label: str
+    related_section_label: str
+    reference_path: str
+    owner_label: str
+    status_label: str
+    tracking_note: str
+    limitation_note: str
+
+
+@dataclass(frozen=True, slots=True)
+class MissingFollowUpRegisterInput:
+    """Optional local follow-up register descriptor that was not supplied."""
+
+    display_label: str
+    local_path: str
+
+
 VALIDATION_SUMMARY_STATUSES = frozenset(("pass", "fail", "skipped"))
 SOURCE_CONTENT_FIELDS = frozenset(
     (
@@ -520,6 +543,10 @@ def generate_paper_report_pack(pack_input: PaperReportPackInput) -> PaperReportP
         pack_input.report_input_manifest,
         manifest_entries,
     )
+    follow_up_entries, missing_follow_up_register = _read_follow_up_register(
+        pack_input.report_input_manifest,
+        manifest_entries,
+    )
     output_path = pack_input.output_dir / "report_pack.md"
     output_path.write_text(
         _render_markdown(
@@ -562,6 +589,8 @@ def generate_paper_report_pack(pack_input: PaperReportPackInput) -> PaperReportP
             missing_open_questions=missing_open_questions,
             decision_log_entries=decision_log_entries,
             missing_decision_log=missing_decision_log,
+            follow_up_entries=follow_up_entries,
+            missing_follow_up_register=missing_follow_up_register,
         ),
         encoding="utf-8",
         newline="\n",
@@ -589,6 +618,7 @@ def generate_paper_report_pack(pack_input: PaperReportPackInput) -> PaperReportP
         limitation_register_entry_count=len(limitation_register_entries),
         open_questions_entry_count=len(open_question_entries),
         decision_log_entry_count=len(decision_log_entries),
+        follow_up_register_entry_count=len(follow_up_entries),
     )
 
 
@@ -619,6 +649,7 @@ def render_summary(pack: PaperReportPack) -> str:
             f"limitation_register_entries={pack.limitation_register_entry_count}",
             f"open_questions_entries={pack.open_questions_entry_count}",
             f"decision_log_entries={pack.decision_log_entry_count}",
+            f"follow_up_register_entries={pack.follow_up_register_entry_count}",
             "limitations=local/offline pack; descriptive only; no profitability claims",
         )
     )
@@ -2587,6 +2618,131 @@ def _parse_decision_log_entry(
     )
 
 
+def _read_follow_up_register(
+    manifest_path: Path | None,
+    manifest_entries: tuple[ReportInputManifestEntry, ...],
+) -> tuple[
+    tuple[LocalFollowUpRegisterEntry, ...],
+    tuple[MissingFollowUpRegisterInput, ...],
+]:
+    if manifest_path is None:
+        return (), ()
+
+    follow_up_entries: list[LocalFollowUpRegisterEntry] = []
+    missing: list[MissingFollowUpRegisterInput] = []
+    for entry in manifest_entries:
+        if entry.input_kind != "local_follow_up_register":
+            continue
+        descriptor_path = _resolve_manifest_local_path(manifest_path, entry.local_path)
+        if not descriptor_path.exists():
+            if entry.required:
+                msg = (
+                    f"{manifest_path}: required local follow-up-register input is "
+                    f"missing: {entry.local_path}"
+                )
+                raise ValueError(msg)
+            missing.append(
+                MissingFollowUpRegisterInput(
+                    display_label=entry.display_label,
+                    local_path=entry.local_path,
+                )
+            )
+            continue
+
+        follow_up_entries.extend(
+            _read_follow_up_register_descriptor(
+                descriptor_path,
+                source_label=entry.display_label,
+            )
+        )
+    return tuple(follow_up_entries), tuple(missing)
+
+
+def _read_follow_up_register_descriptor(
+    path: Path, *, source_label: str
+) -> tuple[LocalFollowUpRegisterEntry, ...]:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        msg = f"{path}: local follow-up-register descriptor must contain a JSON object"
+        raise ValueError(msg)
+    _reject_secret_like_fields(payload, path=path)
+    _reject_source_content_fields(
+        payload,
+        path=path,
+        descriptor_label="follow-up-register",
+    )
+
+    follow_ups = payload.get("follow_ups")
+    if not isinstance(follow_ups, list):
+        msg = (
+            f"{path}: local follow-up-register descriptor must contain a "
+            "follow_ups list"
+        )
+        raise ValueError(msg)
+
+    parsed_follow_ups: list[LocalFollowUpRegisterEntry] = []
+    for index, item in enumerate(follow_ups, start=1):
+        if not isinstance(item, dict):
+            msg = f"{path}: local follow-up-register entry {index} must be an object"
+            raise ValueError(msg)
+        _reject_secret_like_fields(item, path=path)
+        _reject_source_content_fields(
+            item,
+            path=path,
+            descriptor_label="follow-up-register",
+        )
+        parsed_follow_ups.append(
+            _parse_follow_up_register_entry(
+                item,
+                path=path,
+                index=index,
+                source_label=source_label,
+            )
+        )
+    return tuple(parsed_follow_ups)
+
+
+def _parse_follow_up_register_entry(
+    item: dict[str, object], *, path: Path, index: int, source_label: str
+) -> LocalFollowUpRegisterEntry:
+    required_fields = (
+        "follow_up_label",
+        "related_section_label",
+        "reference_path",
+        "owner_label",
+        "status_label",
+        "tracking_note",
+        "limitation_note",
+    )
+    missing = [field for field in required_fields if field not in item]
+    if missing:
+        msg = (
+            f"{path}: local follow-up-register entry {index} "
+            f"missing field(s): {', '.join(missing)}"
+        )
+        raise ValueError(msg)
+
+    reference_path = str(item["reference_path"])
+    parsed = urlparse(reference_path)
+    if parsed.scheme or parsed.netloc:
+        msg = (
+            f"{path}: local follow-up-register entry {index} "
+            "remote URL is not supported"
+        )
+        raise ValueError(msg)
+
+    return LocalFollowUpRegisterEntry(
+        source_label=source_label,
+        follow_up_label=str(item["follow_up_label"]),
+        related_section_label=str(item["related_section_label"]),
+        reference_path=reference_path,
+        owner_label=str(item["owner_label"]),
+        status_label=str(item["status_label"]),
+        tracking_note=str(item["tracking_note"]),
+        limitation_note=str(item["limitation_note"]),
+    )
+
+
 def _render_markdown(
     *,
     pack_input: PaperReportPackInput,
@@ -2628,6 +2784,8 @@ def _render_markdown(
     missing_open_questions: tuple[MissingOpenQuestionsInput, ...],
     decision_log_entries: tuple[LocalDecisionLogEntry, ...],
     missing_decision_log: tuple[MissingDecisionLogInput, ...],
+    follow_up_entries: tuple[LocalFollowUpRegisterEntry, ...],
+    missing_follow_up_register: tuple[MissingFollowUpRegisterInput, ...],
 ) -> str:
     return "\n".join(
         (
@@ -2749,6 +2907,13 @@ def _render_markdown(
             "## Local Decision Log",
             "",
             _render_decision_log(decision_log_entries, missing_decision_log),
+            "",
+            "## Local Follow-Up Register",
+            "",
+            _render_follow_up_register(
+                follow_up_entries,
+                missing_follow_up_register,
+            ),
             "",
             "## SEC Fundamentals",
             "",
@@ -3236,6 +3401,34 @@ def _render_decision_log(
         f"{entry.owner_label} | {entry.status_label} | "
         f"{entry.rationale_note} | {entry.limitation_note} |"
         for entry in decision_entries
+    )
+    rows.extend(
+        f"| {missing_input.display_label} | not supplied | not supplied | "
+        f"{missing_input.local_path} | not supplied | not supplied | "
+        "not supplied | not supplied |"
+        for missing_input in missing_inputs
+    )
+    return "\n".join(rows)
+
+
+def _render_follow_up_register(
+    follow_up_entries: tuple[LocalFollowUpRegisterEntry, ...],
+    missing_inputs: tuple[MissingFollowUpRegisterInput, ...],
+) -> str:
+    if not follow_up_entries and not missing_inputs:
+        return "| input | status |\n| --- | --- |\n| Local follow-up register | not supplied |"
+
+    rows = [
+        "| source | follow-up | related section | reference path | owner | "
+        "status | tracking note | limitation |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- |",
+    ]
+    rows.extend(
+        f"| {entry.source_label} | {entry.follow_up_label} | "
+        f"{entry.related_section_label} | {entry.reference_path} | "
+        f"{entry.owner_label} | {entry.status_label} | "
+        f"{entry.tracking_note} | {entry.limitation_note} |"
+        for entry in follow_up_entries
     )
     rows.extend(
         f"| {missing_input.display_label} | not supplied | not supplied | "

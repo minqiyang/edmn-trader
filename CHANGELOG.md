@@ -6,6 +6,10 @@ numbers while the repository is still in early research scaffolding.
 
 ## Unreleased
 
+- Added Stage 30 local/offline `local_follow_up_register` report-input support
+  to the paper report pack, with descriptor Markdown output, missing-input
+  disclosure, and rejection of secret-like fields, source-content/excerpt
+  fields, and remote URLs.
 - Clarified Stage 30 readiness for a local/offline
   `local_follow_up_register` report-input kind that records follow-up labels,
   related report section labels, local reference paths, owner/status labels,
