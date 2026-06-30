@@ -1093,7 +1093,22 @@ The report is intentionally local and observational. It does not open venue
 connections, authenticate, place orders, optimize strategy, recommend action,
 claim production readiness, or make profitability claims. With Stage 48
 complete, the next roadmap item is Stage 49 Kalshi Demo authenticated connector
-work, which is a human architecture review boundary before implementation.
+work, which required explicit review/authorization before implementation.
+
+## Stage 49 Kalshi Demo authenticated connector
+
+Stage 49 adds a guarded Kalshi Demo connector boundary for request previews and
+mocked submit-path coverage. The connector consumes a paper proposal, clear
+manual-review-required risk decision, non-expired single-use manual approval,
+and reconciled paper ledger state before it can build tiny FOK/IOC Demo request
+previews.
+
+Dry-run preview is the default and works without credentials. The submit path
+requires explicit opt-in, an injected HTTP client in this stage, environment-
+loaded auth headers, Demo-only base URL validation, and append-only local audit
+records with auth-like fields redacted. This stage does not place real orders
+during validation, add production endpoints, implement wallets, optimize
+strategy, offer trading advice, or make profitability claims.
 
 ## Interview narrative
 

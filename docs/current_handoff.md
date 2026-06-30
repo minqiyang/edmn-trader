@@ -45,11 +45,12 @@ rebuild and replay consistency, plus Stage 43 taker fill, slippage, and
 failed-leg simulation, plus Stage 44 paper complement proposal engine, plus
 Stage 45 paper ledger state machine, plus Stage 46 risk engine v2, plus Stage
 47 manual approval workflow, plus Stage 48 monitoring and daily validation
-report.
+report, plus Stage 49 guarded Kalshi Demo connector previews and mocked
+submit-path coverage.
 
 ## Last completed stage
 
-Stage 48 monitoring and daily validation report.
+Stage 49 Kalshi Demo authenticated connector.
 
 ## Stage plan status
 
@@ -65,8 +66,8 @@ slippage, and failed-leg simulator, and Stage 44 paper complement arbitrage
 engine, Stage 45 paper ledger state machine, Stage 46 risk engine v2, and
 Stage 47 manual approval workflow. The ledger records purpose, known commit
 hashes, files/modules added, validation commands, status, next-stage boundary,
-and safety status for each completed stage. Stage 48 is complete, and Stage 49
-is a human architecture review boundary before any implementation.
+and safety status for each completed stage. Stage 49 is complete, and Stage 50
+is the next human-review checkpoint for demo reconciliation only.
 
 Report-input metadata expansion from Stages 11 through 34 is now
 maintenance-only. The previously clarified local delivery-notes report input is
@@ -173,6 +174,20 @@ failed-leg incidents, reconciliation health, and kill-switch events. It does
 not add live connections, credentials, user channels, wallets, signing, order
 placement, venue submission, strategy optimization, executable advice,
 production-readiness claims, or profitability claims.
+
+Stage 49 adds `src/edmn_trader/adapters/kalshi/demo_connector.py` and
+`scripts/49_kalshi_demo_connector.py` for guarded Kalshi Demo request previews
+and mocked submit-path coverage. It consumes a hash-bound, non-expired,
+single-use manual approval record, a clear manual-review-required risk
+decision, and a reconciled paper ledger state before building tiny FOK/IOC
+Demo request previews. Dry-run preview is the default and works without
+credentials. The submit path requires explicit opt-in, an injected HTTP client
+in this stage, environment-loaded auth headers, Demo-only base URL validation,
+and append-only local audit logs with auth-like values redacted. It does not
+execute a real order during validation, add production endpoints, store
+credentials, add wallets, add Polymarket execution, add an LLM trading agent,
+optimize strategy, provide investment advice, emit executable advice, claim
+production readiness, or claim profitability.
 
 `docs/STAGE_PLAN.md` now contains the full Stage 3 specification: snapshot
 schema requirements, Decimal-safe JSONL recorder requirements, deterministic
@@ -1008,9 +1023,9 @@ checkpoint. Complement-parity work must stay deterministic and offline until
 later reviewed stages add fee models, scanners, recorders, simulators, paper
 ledgers, risk/manual approval, or demo connector boundaries.
 
-Next checkpoint: human architecture review before Stage 49 only.
+Next checkpoint: Stage 50 demo reconciliation only.
 
-Exact next prompt: `Use Codex Long Session Governance. Continue continuous staged autopilot from the verified current handoff. Do not implement Stage 49 yet. Perform only the human-review preparation for the Stage 49 Kalshi Demo authenticated connector architecture boundary: summarize completed Stages 35-48, identify required design questions, risk gates, manual approval constraints, reconciliation prerequisites, demo-only connector boundaries, validation expectations, and stop conditions. Do not add order placement, live venue connections, credentials, authenticated requests, wallets, signing, user channels, production endpoints, strategy optimization, investment advice, executable advice, production-readiness claims, or profitability claims.`
+Exact next prompt: `Use Codex Long Session Governance. Continue the EDMN narrow complement-arbitrage roadmap from latest verified origin/main. Implement Stage 50 as one coherent PR: demo reconciliation only. Reconcile Kalshi Demo accepted, rejected, fill, cancel, and backfill-style local/mock records against Stage 49 preview/submission audit records, and hard-stop later submissions on any mismatch. Use deterministic local fixtures and mocked clients only. Do not add production endpoints, real-money execution, wallets, Polymarket execution, live order execution during Codex validation, strategy optimization, investment advice, executable advice, production-readiness claims, or profitability claims. Auto-merge only if the full delivery-unit gate passes; otherwise stop and report the failed gate.`
 
 ## Important files
 
@@ -1039,6 +1054,8 @@ Exact next prompt: `Use Codex Long Session Governance. Continue continuous stage
 - `src/edmn_trader/adapters/kalshi/orderbook.py`: Kalshi orderbook normalizer.
 - `src/edmn_trader/adapters/kalshi/readonly_recorder.py`: Stage 40 guarded
   Kalshi Demo read-only recorder.
+- `src/edmn_trader/adapters/kalshi/demo_connector.py`: Stage 49 guarded
+  Kalshi Demo request preview and mocked submit-path connector.
 - `src/edmn_trader/adapters/polymarket_us/client.py`: guarded read-only
   Polymarket US public market-data client.
 - `src/edmn_trader/adapters/polymarket_us/orderbook.py`: Polymarket US
@@ -1118,6 +1135,10 @@ Exact next prompt: `Use Codex Long Session Governance. Continue continuous stage
   approval workflow.
 - `scripts/48_daily_validation_report.py`: root wrapper for the Stage 48
   offline daily validation report.
+- `src/edmn_trader/scripts/kalshi_demo_connector.py`: importable Stage 49
+  guarded Kalshi Demo connector preview CLI entry point.
+- `scripts/49_kalshi_demo_connector.py`: root wrapper for the Stage 49 guarded
+  Kalshi Demo connector preview.
 - `src/edmn_trader/scripts/research_report.py`: importable Stage 7 offline
   Markdown report generator for Stage 6 logs and explicit fill assumptions.
 - `scripts/07_research_report.py`: root wrapper for Stage 7 reporting.
@@ -1163,6 +1184,8 @@ Exact next prompt: `Use Codex Long Session Governance. Continue continuous stage
   hash-check, single-use, output, and CLI coverage.
 - `tests/test_daily_validation_report.py`: Stage 48 daily validation report
   metrics aggregation, output, and CLI coverage.
+- `tests/test_kalshi_demo_connector.py`: Stage 49 connector preview, guardrail,
+  mocked submit, and audit-redaction coverage.
 - `tests/test_paper_report_pack.py`: Stage 10/12/13/14/15/16/17/18/19/20/21/22/23/24/25/26/27/28/29/30/31/32/33/34 report-pack coverage
   for observed metrics, source inventory, missing optional inputs, local SEC
   facts, manifest metadata, local run-comparison metadata, unsafe
@@ -1332,31 +1355,30 @@ renamed, or noisy, use the equivalent checklist instead of debugging the skill.
 
 ## Next recommended stage
 
-Human architecture review before Stage 49 only.
+Stage 50 demo reconciliation only.
 Start only after reconfirming clean synced `main`, CI, branch protection,
 required `Validate` status, local validation, and whether the PR path applies.
-Do not implement Stage 49 yet. Prepare the Stage 49 Kalshi Demo authenticated
-connector architecture review by summarizing completed Stages 35-48,
-identifying required design questions, risk gates, manual approval constraints,
-reconciliation prerequisites, demo-only connector boundaries, validation
-expectations, and stop conditions. Do not add order placement, live venue
-connections, credentials, authenticated requests, wallets, signing, user
-channels, production endpoints, strategy optimization, investment advice,
-executable advice, production-readiness claims, or profitability claims.
+Do not implement beyond Stage 50. Add demo reconciliation records only:
+accepted, rejected, fill, cancel, and backfill event reconciliation, with
+mismatches hard-stopping later submissions. Do not add production endpoints,
+real-money execution, wallets, Polymarket execution, live order execution
+during Codex validation, strategy optimization, investment advice, executable
+advice, production-readiness claims, or profitability claims.
 
 ## Exact next prompt suggestion
 
-Use Codex Long Session Governance. Continue continuous staged autopilot from
-the verified current handoff. Do not implement Stage 49 yet. Perform only the
-human-review preparation for the Stage 49 Kalshi Demo authenticated connector
-architecture boundary: summarize completed Stages 35-48, identify required
-design questions, risk gates, manual approval constraints, reconciliation
-prerequisites, demo-only connector boundaries, validation expectations, and
-stop conditions. Do not add order placement, live venue connections,
-credentials, authenticated requests, wallets, signing, user channels,
-production endpoints, strategy optimization, investment advice, executable
-advice, production-readiness claims, or profitability claims.
+Use Codex Long Session Governance. Continue the EDMN narrow
+complement-arbitrage roadmap from latest verified `origin/main`. Implement
+Stage 50 as one coherent PR: demo reconciliation only. Reconcile Kalshi Demo
+accepted, rejected, fill, cancel, and backfill-style local/mock records against
+Stage 49 preview/submission audit records, and hard-stop later submissions on
+any mismatch. Use deterministic local fixtures and mocked clients only. Do not
+add production endpoints, real-money execution, wallets, Polymarket execution,
+live order execution during Codex validation, strategy optimization,
+investment advice, executable advice, production-readiness claims, or
+profitability claims. Auto-merge only if the full delivery-unit gate passes;
+otherwise stop and report the failed gate.
 
 ## Last updated timestamp
 
-2026-06-29 10:47:06 -07:00
+2026-06-29 18:07:00 -07:00

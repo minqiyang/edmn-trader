@@ -6,6 +6,11 @@ numbers while the repository is still in early research scaffolding.
 
 ## Unreleased
 
+- Added Stage 49 guarded Kalshi Demo connector previews and mocked submit
+  coverage. The connector consumes hash-bound manual approval, passing risk,
+  and healthy paper ledger records, defaults to dry-run, rejects production
+  URLs, limits FOK/IOC Demo requests to tiny size, and redacts auth-like values
+  in local audit logs.
 - Added Stage 48 offline daily validation reporting for recorder uptime, data
   lag, gap count, candidate counts, rejection reasons, paper/demo outcomes,
   fees, slippage, failed-leg incidents, reconciliation health, and kill-switch
