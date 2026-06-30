@@ -71,6 +71,10 @@ context, then read only the files needed for the requested stage. Use `rg` and
 - `src/edmn_trader/adapters/kalshi/readonly_recorder.py`: Stage 40 guarded
   Kalshi Demo read-only recorder with explicit opt-in and mocked-testable
   client injection.
+- `src/edmn_trader/adapters/kalshi/demo_connector.py`: Stage 49 guarded
+  Kalshi Demo request preview and mocked submit-path connector. Read for
+  manual approval, risk, paper ledger, Demo allowlist, and audit-redaction
+  behavior.
 - `src/edmn_trader/adapters/polymarket_us/client.py`: guarded read-only
   Polymarket US public market-data client.
 - `src/edmn_trader/adapters/polymarket_us/orderbook.py`: Polymarket US
@@ -162,6 +166,8 @@ context, then read only the files needed for the requested stage. Use `rg` and
   manual approval CLI entry point.
 - `src/edmn_trader/scripts/daily_validation_report.py`: importable Stage 48
   daily validation report CLI entry point.
+- `src/edmn_trader/scripts/kalshi_demo_connector.py`: importable Stage 49
+  guarded Kalshi Demo connector preview CLI entry point.
 - `src/edmn_trader/scripts/research_report.py`: importable Stage 7 offline
   report generator for Stage 6 logs and explicit fill assumptions.
 - `src/edmn_trader/scripts/paper_report_pack.py`: importable Stage
@@ -220,6 +226,8 @@ context, then read only the files needed for the requested stage. Use `rg` and
   local single-use manual approval records.
 - `scripts/48_daily_validation_report.py`: builds offline daily validation
   report JSONL/Markdown from local monitoring records.
+- `scripts/49_kalshi_demo_connector.py`: builds guarded Kalshi Demo dry-run
+  request previews from local paper, risk, approval, and ledger records.
 - `scripts/07_research_report.py`: writes a local/offline Markdown attribution
   report from Stage 6 JSONL logs and optional explicit fill fixtures.
 - `scripts/10_paper_report_pack.py`: writes a local/offline Markdown report
@@ -286,6 +294,9 @@ context, then read only the files needed for the requested stage. Use `rg` and
 - `tests/test_daily_validation_report.py`: Stage 48 daily validation report
   coverage for local metrics aggregation, deterministic output, and CLI
   behavior.
+- `tests/test_kalshi_demo_connector.py`: Stage 49 connector coverage for
+  dry-run previews, Demo URL rejection, risk/manual approval/ledger gates,
+  mocked submit success/reject/error paths, and audit redaction.
 - `tests/test_snapshots_jsonl.py`: JSONL roundtrip, Decimal precision,
   malformed JSONL, append behavior, and snapshot raw-payload safety coverage.
 - `tests/test_replay_snapshots.py`: replay ordering, replay metrics, and
