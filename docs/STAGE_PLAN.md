@@ -1185,14 +1185,38 @@ addition of small report-input metadata kinds.
 - Validation commands: `python -m pip install -e ".[dev]"`, `pytest`,
   `ruff check .`, `python scripts/48_daily_validation_report.py --help`,
   `python scripts/01_replay_orderbook_fixture.py`, and `git diff --check`.
-- Next-stage boundary: stop for human architecture review before Stage 49.
-  Stage 49 would be Kalshi Demo authenticated connector work and must not start
-  without explicit review.
+- Next-stage boundary: Stage 49 required explicit review/authorization before
+  implementation; it is now tracked as the next completed stage below.
 - Safety status: monitoring/research records only, no live venue connection
   execution, no credentials, no credential prompts, no authenticated requests,
   no user channel, no wallet, no signing, no order placement imports, no
   venue submission, no production trading endpoint, no strategy optimization,
   no investment advice, no executable advice, and no profitability claims.
+
+### Stage 49: Kalshi Demo authenticated connector
+
+- Status: complete.
+- Commit: pending on the Stage 49 Kalshi Demo connector branch.
+- Purpose: bridge the paper workflow to a guarded Kalshi Demo request preview
+  and mocked submit path after manual approval, clear risk decision, and
+  healthy paper ledger state.
+- Files/modules changed: `src/edmn_trader/adapters/kalshi/demo_connector.py`,
+  `src/edmn_trader/scripts/kalshi_demo_connector.py`,
+  `scripts/49_kalshi_demo_connector.py`, Kalshi adapter exports,
+  `tests/test_kalshi_demo_connector.py`, and documentation updates.
+- Validation commands: `python -m pip install -e ".[dev]"`, `pytest`,
+  `ruff check .`, `python scripts/49_kalshi_demo_connector.py --help`,
+  dry-run preview smoke on a local fixture, `python scripts/01_replay_orderbook_fixture.py`,
+  and `git diff --check`.
+- Next-stage boundary: stop for human review before Stage 50. Stage 50 may add
+  demo reconciliation only: accepted, rejected, fill, cancel, and backfill
+  event reconciliation with mismatch hard-stops for later submissions.
+- Safety status: Demo/paper research infrastructure only, dry-run preview by
+  default, mocked submit-path tests only, Demo base URL allowlist, no production
+  endpoints, no real order execution during Codex validation, no credentials in
+  repo files, no wallet, no Polymarket execution, no LLM trading agent, no
+  strategy optimization, no investment advice, no executable advice, and no
+  profitability claims.
 
 ## Stage 0: Repository foundation
 
