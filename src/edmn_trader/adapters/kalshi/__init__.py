@@ -34,9 +34,26 @@ from edmn_trader.adapters.kalshi.readonly_recorder import (
     KalshiReadOnlyRecorderResult,
     record_kalshi_readonly_orderbook,
 )
+from edmn_trader.adapters.kalshi.ws_auth import (
+    KALSHI_DEMO_API_KEY_ID_ENV,
+    KALSHI_DEMO_PRIVATE_KEY_PATH_ENV,
+    KALSHI_DEMO_WS_URL,
+    KalshiWsAuthBlocked,
+    KalshiWsAuthConfig,
+    build_kalshi_ws_headers,
+    load_kalshi_ws_auth_config_from_env,
+)
+from edmn_trader.adapters.kalshi.ws_recorder import (
+    KalshiWsRecorderConfig,
+    KalshiWsRecorderResult,
+    record_kalshi_demo_ws_orderbook,
+)
 
 __all__ = [
     "KALSHI_DEMO_REST_BASE_URL",
+    "KALSHI_DEMO_WS_URL",
+    "KALSHI_DEMO_API_KEY_ID_ENV",
+    "KALSHI_DEMO_PRIVATE_KEY_PATH_ENV",
     "KalshiClientError",
     "KalshiConfigurationError",
     "KalshiDemoConnectorConfig",
@@ -54,12 +71,19 @@ __all__ = [
     "KalshiReadOnlyRecorderConfig",
     "KalshiReadOnlyRecorderResult",
     "KalshiResponseError",
+    "KalshiWsAuthBlocked",
+    "KalshiWsAuthConfig",
+    "KalshiWsRecorderConfig",
+    "KalshiWsRecorderResult",
     "append_kalshi_demo_reconciliation_jsonl",
+    "build_kalshi_ws_headers",
     "load_kalshi_demo_auth_headers_from_env",
+    "load_kalshi_ws_auth_config_from_env",
     "normalize_kalshi_orderbook_fp",
     "preview_or_submit_kalshi_demo",
     "reconcile_kalshi_demo_events",
     "record_kalshi_readonly_orderbook",
+    "record_kalshi_demo_ws_orderbook",
     "require_demo_reconciliation_submit_eligible",
     "write_kalshi_demo_result_jsonl",
 ]

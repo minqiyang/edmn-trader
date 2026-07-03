@@ -544,6 +544,7 @@ def _campaign_status(summaries: Mapping[str, Mapping[str, object]]) -> dict[str,
         "source_type": source_type,
         "venue": campaign.get("venue"),
         "market": campaign.get("market"),
+        "market_tickers": campaign.get("market_tickers") or [],
         "market_count": campaign.get("market_count"),
         "duration_seconds": campaign.get("duration_seconds"),
         "event_count": event_count,
@@ -568,11 +569,15 @@ def _campaign_status(summaries: Mapping[str, Mapping[str, object]]) -> dict[str,
         "validation_status": validation_status,
         "evidence_classification": validation.get("evidence_classification")
         or campaign.get("evidence_classification"),
+        "connection_established": campaign.get("connection_established"),
+        "subscription_acknowledged": campaign.get("subscription_acknowledged"),
+        "blocker_code": campaign.get("blocker_code") or validation.get("blocker_code"),
         "live_gate_status": campaign.get("live_gate_status"),
         "submit_attempts": submit_attempts,
         "submit_attempt_count": submit_attempts,
         "manifest_path": campaign.get("manifest_path"),
         "validation_report_path": campaign.get("validation_report_path"),
+        "raw_event_path": campaign.get("raw_event_path"),
         "raw_data_path_redacted": campaign.get("raw_data_path_redacted"),
         "blocker": campaign.get("blocker") or validation.get("blocker"),
     }
@@ -586,6 +591,11 @@ def _campaign_monitor_status(
         return None
     source_type = campaign.get("source_type") or validation.get("source_type")
     validation_status = validation.get("status") or campaign.get("validation_status")
+    classification = validation.get("evidence_classification") or campaign.get(
+        "evidence_classification"
+    )
+    if classification == "LAYER1_WS_AUTH_BLOCKED":
+        return "WEBSOCKET_AUTH_BLOCKED"
     event_count = _int_or_zero(campaign.get("event_count") or validation.get("event_count"))
     if event_count <= 0:
         return "NO_DATA"
@@ -599,7 +609,11 @@ def _campaign_monitor_status(
             return "WEBSOCKET_CAMPAIGN_VALIDATED"
         if campaign.get("status") == "running":
             return "WEBSOCKET_CAMPAIGN_RUNNING"
-        return "WEBSOCKET_SMOKE"
+        if classification == "LAYER1_WS_DELTA_SMOKE_PASS":
+            return "WEBSOCKET_DELTA_SMOKE"
+        if classification == "LAYER1_WS_SNAPSHOT_SMOKE_PASS":
+            return "WEBSOCKET_SNAPSHOT_SMOKE"
+        return "NO_DATA"
     return "NO_DATA"
 
 
@@ -917,12 +931,14 @@ def _campaign_line(snapshot: Mapping[str, object]) -> str:
         return "CAMPAIGN: none"
     return (
         "CAMPAIGN: id={campaign_id} status={status} source_type={source_type} "
-        "venue={venue} markets={market_count} events={event_count} snapshots={snapshot_count} "
+        "venue={venue} markets={market_count} tickers={market_tickers} "
+        "events={event_count} snapshots={snapshot_count} "
         "deltas={delta_count} trades={trade_count} status_updates={status_update_count} "
         "heartbeats={heartbeat_count} disconnects={disconnect_count} "
         "reconnects={reconnect_count} gaps={gap_count} last_event={last_event_time} "
         "stale_seconds={stale_seconds} rebuild_frames={rebuild_frame_count} "
-        "validation={validation_status} live_gate={live_gate_status} "
+        "validation={validation_status} connection={connection_established} "
+        "subscription={subscription_acknowledged} live_gate={live_gate_status} "
         "submit_attempts={submit_attempts} manifest={manifest_path} "
         "validation_report={validation_report_path}"
     ).format(**_stringified(campaign))

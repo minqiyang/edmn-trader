@@ -12,6 +12,10 @@ from pathlib import Path
 from edmn_trader.adapters.kalshi import (
     KalshiDemoMarketDataClient,
     KalshiReadOnlyRecorderConfig,
+    KalshiWsAuthBlocked,
+    KalshiWsRecorderConfig,
+    load_kalshi_ws_auth_config_from_env,
+    record_kalshi_demo_ws_orderbook,
     record_kalshi_readonly_orderbook,
 )
 from edmn_trader.data.jsonl import read_jsonl_records, write_jsonl_records
@@ -32,6 +36,7 @@ SECRET_KEY_PARTS = (
     "token",
     "wallet",
 )
+ALLOWED_SECRET_LIKE_KEYS = {"credential_presence"}
 
 
 def plan_campaign(
@@ -298,43 +303,141 @@ def run_kalshi_ws_smoke(
     max_markets: int,
     now: datetime | None = None,
 ) -> dict[str, object]:
-    """Write a truthful blocker report for the not-yet-reviewed Kalshi WS path."""
+    """Run the bounded authenticated read-only Kalshi WS smoke, or block safely."""
 
     _validate_duration(duration_seconds, allow_seven_day=False)
     if max_markets < 1:
         raise ValueError("max_markets must be at least 1")
     generated_at = now or datetime.now(UTC)
     output_dir.mkdir(parents=True, exist_ok=True)
-    blocker = (
-        "Kalshi Demo WebSocket/L2 smoke is blocked because this repo has no reviewed "
-        "authenticated read-only WebSocket adapter yet; REST smoke remains REST-only."
+    try:
+        auth = load_kalshi_ws_auth_config_from_env()
+    except KalshiWsAuthBlocked as exc:
+        return _write_kalshi_ws_summary(
+            output_dir=output_dir,
+            campaign_id=campaign_id,
+            duration_seconds=duration_seconds,
+            max_markets=max_markets,
+            generated_at=generated_at,
+            status="websocket_auth_blocked",
+            blocker_code=exc.code,
+            blocker=f"{exc.code}: Kalshi Demo WebSocket read-only credentials are missing.",
+            credential_presence={"access_id_present": False, "signing_material_present": False},
+        )
+
+    market = _select_kalshi_demo_ws_market(max_markets=max_markets)
+    if market is None:
+        return _write_kalshi_ws_summary(
+            output_dir=output_dir,
+            campaign_id=campaign_id,
+            duration_seconds=duration_seconds,
+            max_markets=max_markets,
+            generated_at=generated_at,
+            status="websocket_blocked",
+            blocker_code="NO_ACTIVE_DEMO_MARKET",
+            blocker="NO_ACTIVE_DEMO_MARKET: no active Demo market with a non-empty orderbook.",
+            credential_presence=auth.credential_presence,
+        )
+
+    recorder = record_kalshi_demo_ws_orderbook(
+        KalshiWsRecorderConfig(
+            campaign_id=campaign_id,
+            market_tickers=(market,),
+            raw_events_path=output_dir / "kalshi_ws_raw_events.jsonl",
+            duration_seconds=duration_seconds,
+        ),
+        auth,
     )
+    status = "websocket_smoke_complete" if recorder.blocker_code is None else "websocket_blocked"
+    return _write_kalshi_ws_summary(
+        output_dir=output_dir,
+        campaign_id=campaign_id,
+        duration_seconds=duration_seconds,
+        max_markets=max_markets,
+        generated_at=generated_at,
+        status=status,
+        blocker_code=recorder.blocker_code,
+        blocker=recorder.blocker_code,
+        credential_presence=auth.credential_presence,
+        market_tickers=[market],
+        connection_established=recorder.connection_established,
+        subscription_acknowledged=recorder.subscription_acknowledged,
+        source_type=recorder.source_type,
+        event_count=recorder.event_count,
+        snapshot_count=recorder.snapshot_count,
+        delta_count=recorder.delta_count,
+        trade_count=recorder.trade_count,
+        status_update_count=recorder.status_update_count,
+        heartbeat_count=recorder.heartbeat_count,
+        error_count=recorder.error_count,
+        disconnect_count=recorder.disconnect_count,
+        reconnect_count=recorder.reconnect_count,
+        gap_count=recorder.gap_count,
+        last_event_time=recorder.last_event_time,
+        stale_seconds=recorder.stale_seconds,
+        raw_event_path=recorder.raw_event_path,
+        raw_event_sha256=recorder.raw_event_sha256,
+    )
+
+
+def _write_kalshi_ws_summary(
+    *,
+    output_dir: Path,
+    campaign_id: str,
+    duration_seconds: int,
+    max_markets: int,
+    generated_at: datetime,
+    status: str,
+    blocker_code: str | None,
+    blocker: str | None,
+    credential_presence: dict[str, bool],
+    market_tickers: list[str] | None = None,
+    connection_established: bool = False,
+    subscription_acknowledged: bool = False,
+    source_type: str = "WEBSOCKET_SNAPSHOT",
+    event_count: int = 0,
+    snapshot_count: int = 0,
+    delta_count: int = 0,
+    trade_count: int = 0,
+    status_update_count: int = 0,
+    heartbeat_count: int = 1,
+    error_count: int = 1,
+    disconnect_count: int = 0,
+    reconnect_count: int = 0,
+    gap_count: int = 0,
+    last_event_time: str | None = None,
+    stale_seconds: int | None = None,
+    raw_event_path: str | None = None,
+    raw_event_sha256: str | None = None,
+) -> dict[str, object]:
+    market_tickers = market_tickers or []
     heartbeat = {
         "record_type": "campaign_heartbeat",
         "campaign_id": campaign_id,
         "venue": "kalshi_demo",
-        "market": "UNSELECTED",
+        "market": market_tickers[0] if market_tickers else "UNSELECTED",
         "sequence": 1,
         "observed_at": generated_at.isoformat(),
         "received_at": generated_at.isoformat(),
-        "source_type": "WEBSOCKET_DELTA",
+        "source_type": source_type,
         "live_gate_status": "disabled",
         "submit_attempt": False,
         "production_endpoint_used": False,
-        "status": "blocked",
-        "blocker": blocker,
+        "status": status,
+        "blocker_code": blocker_code,
     }
     write_jsonl_records(output_dir / "campaign_heartbeat.jsonl", [heartbeat])
     summary = {
         "schema_version": SCHEMA_VERSION,
         "campaign_id": campaign_id,
-        "status": "websocket_blocked",
+        "status": status,
         "artifact_root": str(output_dir),
         "venue": "kalshi_demo",
-        "market": "UNSELECTED",
-        "market_count": 0,
+        "market": market_tickers[0] if market_tickers else "UNSELECTED",
+        "market_tickers": market_tickers,
+        "market_count": len(market_tickers),
         "max_markets": max_markets,
-        "source_type": "WEBSOCKET_DELTA",
+        "source_type": source_type,
         "generated_at_utc": generated_at.isoformat(),
         "planned_end_utc": (generated_at + timedelta(seconds=duration_seconds)).isoformat(),
         "duration_seconds": duration_seconds,
@@ -345,20 +448,27 @@ def run_kalshi_ws_smoke(
         "submit_attempt_count": 0,
         "submit_attempts": 0,
         "real_money_trading": False,
-        "event_count": 0,
-        "snapshot_count": 0,
-        "delta_count": 0,
-        "trade_count": 0,
-        "status_update_count": 0,
-        "heartbeat_count": 1,
-        "disconnect_count": 0,
-        "reconnect_count": 0,
-        "gap_count": 0,
-        "last_event_time": None,
-        "stale_seconds": None,
+        "connection_established": connection_established,
+        "subscription_acknowledged": subscription_acknowledged,
+        "event_count": event_count,
+        "snapshot_count": snapshot_count,
+        "delta_count": delta_count,
+        "trade_count": trade_count,
+        "status_update_count": status_update_count,
+        "heartbeat_count": heartbeat_count,
+        "error_count": error_count,
+        "disconnect_count": disconnect_count,
+        "reconnect_count": reconnect_count,
+        "gap_count": gap_count,
+        "last_event_time": last_event_time,
+        "stale_seconds": stale_seconds,
         "rebuild_frame_count": 0,
-        "validation_status": "blocked",
+        "validation_status": "blocked" if blocker_code else "pass",
+        "blocker_code": blocker_code,
         "blocker": blocker,
+        "credential_presence": credential_presence,
+        "raw_event_path": raw_event_path,
+        "raw_event_sha256": raw_event_sha256,
         "evidence_classification": "LAYER1_WS_CAMPAIGN_INCOMPLETE",
         "manifest_path": str(output_dir / "campaign_manifest.json"),
         "validation_report_path": str(output_dir / "campaign_validation.json"),
@@ -380,6 +490,7 @@ def run_kalshi_ws_smoke(
         "validation_status": validation["status"],
         "evidence_classification": validation["evidence_classification"],
         "blocker": blocker,
+        "blocker_code": blocker_code,
         "live_gate_status": "disabled",
         "submit_attempt_count": 0,
     }
@@ -429,7 +540,10 @@ def validate_campaign(*, input_dir: Path) -> dict[str, object]:
         rebuild_frames=rebuild_frames,
     )
     status = "pass" if not failures else "fail"
-    if not failures and summary.get("status") == "websocket_blocked":
+    if not failures and str(summary.get("status", "")).startswith("websocket_"):
+        if summary.get("blocker_code"):
+            status = "blocked"
+    if not failures and summary.get("status") == "websocket_auth_blocked":
         status = "blocked"
     result = {
         "schema_version": SCHEMA_VERSION,
@@ -454,6 +568,9 @@ def validate_campaign(*, input_dir: Path) -> dict[str, object]:
         "daily_validation_count": len(daily_validation),
         "failures": failures,
         "blocker": summary.get("blocker"),
+        "blocker_code": summary.get("blocker_code"),
+        "connection_established": summary.get("connection_established"),
+        "subscription_acknowledged": summary.get("subscription_acknowledged"),
         "strict_verdict": "STRICT NO-GO",
     }
     _write_json(input_dir / "campaign_validation.json", result)
@@ -528,7 +645,7 @@ def _run_mode_command(argv: list[str]) -> dict[str, object]:
     parser.add_argument("--duration-seconds", type=int, required=True)
     parser.add_argument("--max-markets", type=int, default=1)
     parser.add_argument("--output-dir", required=True, type=Path)
-    parser.add_argument("--campaign-id", default="round6_kalshi_ws_smoke")
+    parser.add_argument("--campaign-id", default="round6b_kalshi_ws_smoke")
     args = parser.parse_args(argv)
     if args.mode == "kalshi-ws-campaign":
         return plan_kalshi_ws_campaign(
@@ -613,18 +730,30 @@ def _classify_campaign(
 ) -> str:
     source_type = summary.get("source_type")
     status = summary.get("status")
+    blocker_code = summary.get("blocker_code")
+    if blocker_code in {
+        "NO_WS_CREDENTIALS",
+        "WS_PRIVATE_KEY_LOAD_FAILED",
+        "AUTH_SIGNATURE_FAILED",
+    }:
+        return "LAYER1_WS_AUTH_BLOCKED"
     if failures or status == "websocket_blocked":
         return "LAYER1_WS_CAMPAIGN_INCOMPLETE"
     if source_type == "REST":
         return "LAYER1_REST_SMOKE_PASS"
     if source_type in WEBSOCKET_SOURCE_TYPES:
         event_count = _campaign_count(summary, "event_count", len(recorder_events))
-        rebuild_count = _campaign_count(summary, "rebuild_frame_count", len(rebuild_frames))
-        if event_count <= 0 or rebuild_count <= 0:
+        snapshot_count = _campaign_count(summary, "snapshot_count", 0)
+        delta_count = _campaign_count(summary, "delta_count", 0)
+        if event_count <= 0:
             return "LAYER1_WS_CAMPAIGN_INCOMPLETE"
         if _as_int(summary.get("duration_seconds")) >= SEVEN_DAY_SECONDS:
             return "LAYER1_WS_CAMPAIGN_PASS_7D"
-        return "LAYER1_WS_SMOKE_PASS"
+        if delta_count > 0:
+            return "LAYER1_WS_DELTA_SMOKE_PASS"
+        if snapshot_count > 0 and summary.get("subscription_acknowledged") is True:
+            return "LAYER1_WS_SNAPSHOT_SMOKE_PASS"
+        return "LAYER1_WS_CAMPAIGN_INCOMPLETE"
     return "LAYER1_WS_CAMPAIGN_INCOMPLETE"
 
 
@@ -662,6 +791,12 @@ def _write_campaign_manifest(
         "rebuild_frame_count": summary.get("rebuild_frame_count", 0),
         "live_gate_status": summary.get("live_gate_status"),
         "submit_attempts": summary.get("submit_attempts", summary.get("submit_attempt_count", 0)),
+        "connection_established": summary.get("connection_established"),
+        "subscription_acknowledged": summary.get("subscription_acknowledged"),
+        "market_tickers": summary.get("market_tickers", []),
+        "credential_presence": summary.get("credential_presence"),
+        "raw_event_path": summary.get("raw_data_path_redacted"),
+        "raw_event_sha256": summary.get("raw_event_sha256"),
         "raw_data_path_redacted": summary.get("raw_data_path_redacted"),
         "manifest_path": summary.get("manifest_path"),
         "validation_report_path": summary.get("validation_report_path"),
@@ -669,6 +804,8 @@ def _write_campaign_manifest(
     }
     if summary.get("blocker"):
         manifest["blocker"] = summary["blocker"]
+    if summary.get("blocker_code"):
+        manifest["blocker_code"] = summary["blocker_code"]
     _write_json(root / "campaign_manifest.json", manifest)
 
 
@@ -691,12 +828,40 @@ def _write_run_metadata(
         "live_gate_status": summary.get("live_gate_status"),
         "production_endpoint_used": summary.get("production_endpoint_used"),
         "submit_attempts": summary.get("submit_attempts", summary.get("submit_attempt_count", 0)),
+        "credential_presence": summary.get("credential_presence"),
+        "connection_established": summary.get("connection_established"),
+        "subscription_acknowledged": summary.get("subscription_acknowledged"),
         "raw_data_path_redacted": summary.get("raw_data_path_redacted"),
         "strict_verdict": "STRICT NO-GO",
     }
     if summary.get("blocker"):
         metadata["blocker"] = summary["blocker"]
+    if summary.get("blocker_code"):
+        metadata["blocker_code"] = summary["blocker_code"]
     _write_json(root / "run_metadata.json", metadata)
+
+
+def _select_kalshi_demo_ws_market(*, max_markets: int) -> str | None:
+    try:
+        with KalshiDemoMarketDataClient() as client:
+            payload = client.list_markets(limit=max(1, max_markets * 20), status="open")
+            markets = payload.get("markets")
+            if not isinstance(markets, list):
+                return None
+            for item in markets:
+                if not isinstance(item, dict):
+                    continue
+                ticker = item.get("ticker") or item.get("market_ticker")
+                if not isinstance(ticker, str) or not ticker:
+                    continue
+                try:
+                    client.get_market_orderbook(ticker)
+                except Exception:
+                    continue
+                return ticker
+    except Exception:
+        return None
+    return None
 
 
 def _read_json(path: Path, failures: list[str]) -> dict[str, object]:
@@ -741,6 +906,8 @@ def _has_secret_key(value: object) -> bool:
     if isinstance(value, dict):
         for key, item in value.items():
             lowered = str(key).lower()
+            if lowered in ALLOWED_SECRET_LIKE_KEYS:
+                continue
             if any(part in lowered for part in SECRET_KEY_PARTS):
                 return True
             if _has_secret_key(item):

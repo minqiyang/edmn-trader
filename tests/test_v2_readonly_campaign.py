@@ -129,17 +129,17 @@ def test_kalshi_ws_smoke_truthfully_blocks_without_reviewed_ws_adapter(tmp_path:
     )
 
     assert result["validation_status"] == "blocked"
-    assert result["evidence_classification"] == "LAYER1_WS_CAMPAIGN_INCOMPLETE"
+    assert result["evidence_classification"] == "LAYER1_WS_AUTH_BLOCKED"
     assert result["submit_attempt_count"] == 0
     assert (tmp_path / "campaign_manifest.json").exists()
     assert (tmp_path / "run_metadata.json").exists()
     validation = json.loads((tmp_path / "campaign_validation.json").read_text(encoding="utf-8"))
-    assert validation["source_type"] == "WEBSOCKET_DELTA"
+    assert validation["source_type"] == "WEBSOCKET_SNAPSHOT"
     assert validation["event_count"] == 0
     snapshot = build_monitor_snapshot(tmp_path, now=datetime(2026, 7, 3, 18, 0, tzinfo=UTC))
     rendered = render_snapshot(snapshot, "table")
-    assert snapshot["campaign"]["status"] == "NO_DATA"
-    assert snapshot["campaign"]["source_type"] == "WEBSOCKET_DELTA"
+    assert snapshot["campaign"]["status"] == "WEBSOCKET_AUTH_BLOCKED"
+    assert snapshot["campaign"]["source_type"] == "WEBSOCKET_SNAPSHOT"
     assert "validation=blocked" in rendered
 
 
@@ -164,6 +164,8 @@ def test_validator_classifies_websocket_smoke_only_when_ws_events_exist(
             "delta_count": 1,
             "snapshot_count": 1,
             "rebuild_frame_count": 2,
+            "connection_established": True,
+            "subscription_acknowledged": True,
             "last_event_time": "2026-07-03T18:00:00+00:00",
         }
     )
@@ -192,7 +194,7 @@ def test_validator_classifies_websocket_smoke_only_when_ws_events_exist(
     result = validate_campaign(input_dir=tmp_path)
 
     assert result["status"] == "pass"
-    assert result["evidence_classification"] == "LAYER1_WS_SMOKE_PASS"
+    assert result["evidence_classification"] == "LAYER1_WS_DELTA_SMOKE_PASS"
 
 
 def test_monitor_shows_campaign_view(tmp_path: Path) -> None:
