@@ -313,6 +313,11 @@ def run_kalshi_ws_smoke(
     try:
         auth = load_kalshi_ws_auth_config_from_env()
     except KalshiWsAuthBlocked as exc:
+        message = "Kalshi Demo WebSocket read-only credentials are missing."
+        if exc.code == "WS_CREDENTIAL_STORAGE_UNSAFE":
+            message = "Kalshi Demo WebSocket credential storage is unsafe."
+        elif exc.code == "WS_PRIVATE_KEY_LOAD_FAILED":
+            message = "Kalshi Demo WebSocket private key could not be loaded."
         return _write_kalshi_ws_summary(
             output_dir=output_dir,
             campaign_id=campaign_id,
@@ -321,7 +326,7 @@ def run_kalshi_ws_smoke(
             generated_at=generated_at,
             status="websocket_auth_blocked",
             blocker_code=exc.code,
-            blocker=f"{exc.code}: Kalshi Demo WebSocket read-only credentials are missing.",
+            blocker=f"{exc.code}: {message}",
             credential_presence={"access_id_present": False, "signing_material_present": False},
         )
 
@@ -645,18 +650,19 @@ def _run_mode_command(argv: list[str]) -> dict[str, object]:
     parser.add_argument("--duration-seconds", type=int, required=True)
     parser.add_argument("--max-markets", type=int, default=1)
     parser.add_argument("--output-dir", required=True, type=Path)
-    parser.add_argument("--campaign-id", default="round6b_kalshi_ws_smoke")
+    parser.add_argument("--campaign-id")
     args = parser.parse_args(argv)
+    campaign_id = args.campaign_id or args.output_dir.name
     if args.mode == "kalshi-ws-campaign":
         return plan_kalshi_ws_campaign(
             output_dir=args.output_dir,
-            campaign_id=args.campaign_id,
+            campaign_id=campaign_id,
             duration_seconds=args.duration_seconds,
             max_markets=args.max_markets,
         )
     return run_kalshi_ws_smoke(
         output_dir=args.output_dir,
-        campaign_id=args.campaign_id,
+        campaign_id=campaign_id,
         duration_seconds=args.duration_seconds,
         max_markets=args.max_markets,
     )
@@ -731,12 +737,12 @@ def _classify_campaign(
     source_type = summary.get("source_type")
     status = summary.get("status")
     blocker_code = summary.get("blocker_code")
-    if blocker_code in {
-        "NO_WS_CREDENTIALS",
-        "WS_PRIVATE_KEY_LOAD_FAILED",
-        "AUTH_SIGNATURE_FAILED",
-    }:
-        return "LAYER1_WS_AUTH_BLOCKED"
+    if blocker_code == "NO_WS_CREDENTIALS":
+        return "NO_WS_CREDENTIALS"
+    if blocker_code == "WS_CREDENTIAL_STORAGE_UNSAFE":
+        return "WS_CREDENTIAL_STORAGE_UNSAFE"
+    if blocker_code in {"WS_PRIVATE_KEY_LOAD_FAILED", "AUTH_SIGNATURE_FAILED"}:
+        return "WS_AUTH_FAILED"
     if failures or status == "websocket_blocked":
         return "LAYER1_WS_CAMPAIGN_INCOMPLETE"
     if source_type == "REST":

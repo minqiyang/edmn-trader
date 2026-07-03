@@ -129,7 +129,7 @@ def test_kalshi_ws_smoke_truthfully_blocks_without_reviewed_ws_adapter(tmp_path:
     )
 
     assert result["validation_status"] == "blocked"
-    assert result["evidence_classification"] == "LAYER1_WS_AUTH_BLOCKED"
+    assert result["evidence_classification"] == "NO_WS_CREDENTIALS"
     assert result["submit_attempt_count"] == 0
     assert (tmp_path / "campaign_manifest.json").exists()
     assert (tmp_path / "run_metadata.json").exists()

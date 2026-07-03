@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import os
+import stat
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -48,7 +49,9 @@ def load_kalshi_ws_auth_config_from_env(
     key_path = env.get(KALSHI_DEMO_PRIVATE_KEY_PATH_ENV)
     if not key_id or not key_path:
         raise KalshiWsAuthBlocked("NO_WS_CREDENTIALS")
-    return KalshiWsAuthConfig(api_key_id=key_id, private_key_path=Path(key_path))
+    path = Path(key_path).expanduser()
+    _validate_private_key_path(path)
+    return KalshiWsAuthConfig(api_key_id=key_id, private_key_path=path)
 
 
 def build_kalshi_ws_headers(
@@ -79,3 +82,20 @@ def _load_private_key(path: Path) -> rsa.RSAPrivateKey:
     if not isinstance(key, rsa.RSAPrivateKey):
         raise KalshiWsAuthBlocked("WS_PRIVATE_KEY_LOAD_FAILED")
     return key
+
+
+def _validate_private_key_path(path: Path) -> None:
+    try:
+        resolved = path.resolve()
+        file_stat = resolved.stat()
+    except OSError as exc:
+        raise KalshiWsAuthBlocked("WS_PRIVATE_KEY_LOAD_FAILED") from exc
+    if _is_inside_git_repo(resolved):
+        raise KalshiWsAuthBlocked("WS_CREDENTIAL_STORAGE_UNSAFE")
+    if stat.S_IMODE(file_stat.st_mode) & 0o077:
+        raise KalshiWsAuthBlocked("WS_CREDENTIAL_STORAGE_UNSAFE")
+    _load_private_key(resolved)
+
+
+def _is_inside_git_repo(path: Path) -> bool:
+    return any((parent / ".git").exists() for parent in (path.parent, *path.parents))

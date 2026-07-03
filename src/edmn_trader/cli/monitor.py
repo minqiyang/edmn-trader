@@ -594,7 +594,12 @@ def _campaign_monitor_status(
     classification = validation.get("evidence_classification") or campaign.get(
         "evidence_classification"
     )
-    if classification == "LAYER1_WS_AUTH_BLOCKED":
+    if classification in {
+        "NO_WS_CREDENTIALS",
+        "WS_CREDENTIAL_STORAGE_UNSAFE",
+        "WS_AUTH_FAILED",
+        "LAYER1_WS_AUTH_BLOCKED",
+    }:
         return "WEBSOCKET_AUTH_BLOCKED"
     event_count = _int_or_zero(campaign.get("event_count") or validation.get("event_count"))
     if event_count <= 0:
