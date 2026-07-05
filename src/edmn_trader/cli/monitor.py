@@ -626,10 +626,17 @@ def _campaign_monitor_status(
         return "REST_SMOKE"
     if source_type in {"WEBSOCKET_SNAPSHOT", "WEBSOCKET_DELTA"}:
         duration_seconds = _int_or_zero(campaign.get("duration_seconds"))
-        if validation_status == "pass" and duration_seconds >= 604_800:
-            return "WEBSOCKET_CAMPAIGN_VALIDATED"
+        if classification == "LAYER1_WS_CAMPAIGN_INCOMPLETE":
+            return "CAMPAIGN_INCOMPLETE"
         if campaign.get("status") in RUNNING_CAMPAIGN_STATUSES:
             return "WEBSOCKET_CAMPAIGN_RUNNING"
+        if (
+            validation_status == "pass"
+            and duration_seconds >= 604_800
+            and campaign.get("status") == "websocket_campaign_complete"
+            and classification == "LAYER1_WS_CAMPAIGN_PASS_7D"
+        ):
+            return "WEBSOCKET_CAMPAIGN_VALIDATED"
         if classification == "LAYER1_WS_DELTA_SMOKE_PASS":
             return "WEBSOCKET_DELTA_SMOKE"
         if classification == "LAYER1_WS_SNAPSHOT_ONLY_EXTENDED":
