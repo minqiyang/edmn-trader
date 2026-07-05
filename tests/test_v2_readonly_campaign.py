@@ -376,6 +376,25 @@ def test_monitor_stopped_unexpected_websocket_campaign_staleness_remains_warning
     assert snapshot["system"]["health"] == "WARNING"
 
 
+def test_monitor_does_not_validate_incomplete_seven_day_artifact(tmp_path: Path) -> None:
+    _write_ws_campaign_summary(
+        tmp_path,
+        status="websocket_campaign_running",
+        duration_seconds=604800,
+        evidence_classification="LAYER1_WS_CAMPAIGN_INCOMPLETE",
+        event_count=2,
+        snapshot_count=1,
+        delta_count=0,
+    )
+
+    snapshot = build_monitor_snapshot(tmp_path, now=datetime(2026, 7, 3, 18, 5, tzinfo=UTC))
+
+    assert snapshot["campaign"]["status"] == "CAMPAIGN_INCOMPLETE"
+    assert snapshot["campaign"]["evidence_classification"] == "LAYER1_WS_CAMPAIGN_INCOMPLETE"
+    assert snapshot["campaign"]["delta_count"] == 0
+    assert snapshot["campaign"]["submit_attempts"] == 0
+
+
 def _kalshi_client(requests: list[httpx.Request] | None = None) -> KalshiDemoMarketDataClient:
     payload = json.loads((FIXTURES / "kalshi_orderbook_response.json").read_text(encoding="utf-8"))
 
@@ -397,6 +416,8 @@ def _write_ws_campaign_summary(
     event_count: int = 6,
     snapshot_count: int = 1,
     delta_count: int = 4,
+    duration_seconds: int = 1800,
+    evidence_classification: str = "LAYER1_WS_DELTA_SMOKE_PASS",
 ) -> None:
     summary = {
         "schema_version": "v2.readonly_campaign.v1",
@@ -405,7 +426,7 @@ def _write_ws_campaign_summary(
         "venue": "kalshi_demo",
         "market": "DEMO-MARKET",
         "source_type": "WEBSOCKET_DELTA",
-        "duration_seconds": 1800,
+        "duration_seconds": duration_seconds,
         "live_gate_status": "disabled",
         "production_endpoint_used": False,
         "submit_attempt_count": 0,
@@ -421,12 +442,12 @@ def _write_ws_campaign_summary(
         "reconnect_count": 0,
         "last_event_time": "2026-07-03T18:00:00+00:00",
         "validation_status": validation_status,
-        "evidence_classification": "LAYER1_WS_DELTA_SMOKE_PASS",
+        "evidence_classification": evidence_classification,
     }
     validation = {
         "status": validation_status,
         "source_type": "WEBSOCKET_DELTA",
-        "evidence_classification": "LAYER1_WS_DELTA_SMOKE_PASS",
+        "evidence_classification": evidence_classification,
         "event_count": event_count,
         "snapshot_count": snapshot_count,
         "delta_count": delta_count,
