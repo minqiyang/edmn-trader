@@ -6,6 +6,7 @@ import argparse
 import json
 import sys
 import time
+from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -23,6 +24,18 @@ SEVEN_DAY_SECONDS = 604_800
 SCHEMA_VERSION = "v2.readonly_campaign.v1"
 SOURCE_TYPES = {"SYNTHETIC", "REST", "WEBSOCKET_SNAPSHOT", "WEBSOCKET_DELTA"}
 WEBSOCKET_SOURCE_TYPES = {"WEBSOCKET_SNAPSHOT", "WEBSOCKET_DELTA"}
+DEFAULT_SELECTION_SAFETY_BUFFER_SECONDS = 86_400
+OPEN_MARKET_STATUSES = {"open", "trading"}
+MARKET_STATUS_REJECTION_REASONS = {
+    "unopened": "MARKET_STATUS_UNOPENED",
+    "paused": "MARKET_STATUS_PAUSED",
+    "closed": "MARKET_STATUS_CLOSED",
+    "settled": "MARKET_STATUS_SETTLED",
+    "finalized": "MARKET_STATUS_FINALIZED",
+    "resolved": "MARKET_STATUS_FINALIZED",
+    "expired": "MARKET_STATUS_CLOSED",
+}
+CLOSED_OR_FINAL_STATUSES = {"closed", "settled", "finalized", "resolved", "expired"}
 SECRET_KEY_PARTS = (
     "api_key",
     "authorization",
@@ -32,6 +45,68 @@ SECRET_KEY_PARTS = (
     "token",
     "wallet",
 )
+
+
+def evaluate_market_selection(
+    market_metadata: Mapping[str, object] | None,
+    *,
+    selected_at_utc: datetime,
+    duration_seconds: int,
+    safety_buffer_seconds: int = DEFAULT_SELECTION_SAFETY_BUFFER_SECONDS,
+    selection_reason: str = "read_only_campaign_selection",
+    require_non_empty_orderbook: bool = True,
+) -> dict[str, object]:
+    if market_metadata is None:
+        return _market_lifecycle_record(
+            {},
+            selected_at_utc=selected_at_utc,
+            duration_seconds=duration_seconds,
+            safety_buffer_seconds=safety_buffer_seconds,
+            selection_reason=selection_reason,
+            result="reject",
+            reason="MISSING_MARKET_METADATA",
+        )
+
+    status = str(market_metadata.get("status") or "").strip().lower()
+    reason = MARKET_STATUS_REJECTION_REASONS.get(status)
+    if not status:
+        reason = "MARKET_STATUS_UNKNOWN"
+    elif status not in OPEN_MARKET_STATUSES and reason is None:
+        reason = "MARKET_STATUS_UNKNOWN"
+
+    close_time = _first_metadata_time(
+        market_metadata,
+        "close_time",
+        "expected_expiration",
+        "expiration_time",
+        "occurrence_time",
+        "listed_expiration",
+    )
+    if reason is None and close_time is None:
+        reason = "MISSING_CLOSE_TIME"
+
+    time_to_close = (
+        int((close_time - selected_at_utc).total_seconds()) if close_time else None
+    )
+    if (
+        reason is None
+        and time_to_close is not None
+        and time_to_close < duration_seconds + safety_buffer_seconds
+    ):
+        reason = "TIME_TO_CLOSE_TOO_SHORT"
+
+    if reason is None and require_non_empty_orderbook and _is_empty_orderbook(market_metadata):
+        reason = "EMPTY_ORDERBOOK"
+
+    return _market_lifecycle_record(
+        market_metadata,
+        selected_at_utc=selected_at_utc,
+        duration_seconds=duration_seconds,
+        safety_buffer_seconds=safety_buffer_seconds,
+        selection_reason=selection_reason,
+        result="pass" if reason is None else "reject",
+        reason=reason,
+    )
 
 
 def plan_campaign(
@@ -44,6 +119,8 @@ def plan_campaign(
     interval_seconds: int,
     source_type: str = "SYNTHETIC",
     now: datetime | None = None,
+    market_metadata: Mapping[str, object] | None = None,
+    selection_reason: str = "bounded_smoke",
 ) -> dict[str, object]:
     _validate_duration(duration_seconds, allow_seven_day=False)
     if interval_seconds < 1:
@@ -55,6 +132,16 @@ def plan_campaign(
             "source_type must be SYNTHETIC, REST, WEBSOCKET_SNAPSHOT, or WEBSOCKET_DELTA"
         )
     generated_at = now or datetime.now(UTC)
+    lifecycle = (
+        evaluate_market_selection(
+            market_metadata,
+            selected_at_utc=generated_at,
+            duration_seconds=duration_seconds,
+            selection_reason=selection_reason,
+        )
+        if market_metadata is not None
+        else _default_lifecycle_record(market, generated_at, duration_seconds)
+    )
     root.mkdir(parents=True, exist_ok=True)
     summary = {
         "schema_version": SCHEMA_VERSION,
@@ -91,6 +178,11 @@ def plan_campaign(
         "manifest_path": str(root / "campaign_manifest.json"),
         "validation_report_path": str(root / "campaign_validation.json"),
         "raw_data_path_redacted": f"[LOCAL_PRIVATE_DATA_ROOT]/{root.name}",
+        **lifecycle,
+        "supervisor_liveness_status": "UNKNOWN",
+        "campaign_process_liveness_status": "UNKNOWN",
+        "websocket_message_freshness_status": "NOT_OBSERVED",
+        "exchange_heartbeat_status": "UNKNOWN",
         "expected_files": [
             "campaign_summary.json",
             "campaign_heartbeat.jsonl",
@@ -304,6 +396,7 @@ def run_kalshi_ws_smoke(
     if max_markets < 1:
         raise ValueError("max_markets must be at least 1")
     generated_at = now or datetime.now(UTC)
+    lifecycle = _default_lifecycle_record("UNSELECTED", generated_at, duration_seconds)
     output_dir.mkdir(parents=True, exist_ok=True)
     blocker = (
         "Kalshi Demo WebSocket/L2 smoke is blocked because this repo has no reviewed "
@@ -363,6 +456,11 @@ def run_kalshi_ws_smoke(
         "manifest_path": str(output_dir / "campaign_manifest.json"),
         "validation_report_path": str(output_dir / "campaign_validation.json"),
         "raw_data_path_redacted": f"[LOCAL_PRIVATE_DATA_ROOT]/{output_dir.name}",
+        **lifecycle,
+        "supervisor_liveness_status": "UNKNOWN",
+        "campaign_process_liveness_status": "UNKNOWN",
+        "websocket_message_freshness_status": "UNKNOWN",
+        "exchange_heartbeat_status": "UNKNOWN",
     }
     _write_json(output_dir / "campaign_summary.json", summary)
     validation = validate_campaign(input_dir=output_dir)
@@ -420,6 +518,14 @@ def validate_campaign(*, input_dir: Path) -> dict[str, object]:
             failures.append("recorder smoke must contain rebuild_frames.jsonl")
         if not daily_validation:
             failures.append("recorder smoke must contain daily_validation.jsonl")
+    if (
+        summary.get("mode") == "read_only_websocket_campaign"
+        and summary.get("selection_gate_result") != "pass"
+    ):
+        failures.append(
+            "market selection gate rejected: "
+            f"{summary.get('selection_gate_rejection_reason') or 'MARKET_STATUS_UNKNOWN'}"
+        )
     if _secret_like_files(input_dir):
         failures.append("secret-like field found in campaign artifacts")
     evidence_classification = _classify_campaign(
@@ -438,6 +544,13 @@ def validate_campaign(*, input_dir: Path) -> dict[str, object]:
         "campaign_id": summary.get("campaign_id"),
         "source_type": source_type,
         "evidence_classification": evidence_classification,
+        "data_integrity_classification": "DATA_INTEGRITY_FAIL"
+        if failures
+        else "DATA_INTEGRITY_PASS",
+        "campaign_evidence_valid": evidence_classification
+        != "MARKET_CLOSED_OR_FINALIZED_ENDS_CAMPAIGN_EVIDENCE",
+        "market_lifecycle_status": _market_lifecycle_status(summary),
+        "market_closed_or_finalized": _market_closed_or_finalized(summary),
         "heartbeat_count": len(heartbeats),
         "event_count": _campaign_count(summary, "event_count", len(recorder_events)),
         "snapshot_count": _campaign_count(summary, "snapshot_count", 0),
@@ -557,6 +670,12 @@ def plan_kalshi_ws_campaign(
     if max_markets < 1:
         raise ValueError("max_markets must be at least 1")
     generated_at = now or datetime.now(UTC)
+    lifecycle = evaluate_market_selection(
+        None,
+        selected_at_utc=generated_at,
+        duration_seconds=duration_seconds,
+        selection_reason="kalshi_ws_campaign_requires_selected_market_metadata",
+    )
     output_dir.mkdir(parents=True, exist_ok=True)
     summary = {
         "schema_version": SCHEMA_VERSION,
@@ -582,6 +701,11 @@ def plan_kalshi_ws_campaign(
         "manifest_path": str(output_dir / "campaign_manifest.json"),
         "validation_report_path": str(output_dir / "campaign_validation.json"),
         "raw_data_path_redacted": f"[LOCAL_PRIVATE_DATA_ROOT]/{output_dir.name}",
+        **lifecycle,
+        "supervisor_liveness_status": "UNKNOWN",
+        "campaign_process_liveness_status": "UNKNOWN",
+        "websocket_message_freshness_status": "UNKNOWN",
+        "exchange_heartbeat_status": "UNKNOWN",
     }
     _write_json(output_dir / "campaign_summary.json", summary)
     _write_campaign_manifest(output_dir, summary, validation=None)
@@ -613,6 +737,8 @@ def _classify_campaign(
 ) -> str:
     source_type = summary.get("source_type")
     status = summary.get("status")
+    if _market_closed_or_finalized(summary):
+        return "MARKET_CLOSED_OR_FINALIZED_ENDS_CAMPAIGN_EVIDENCE"
     if failures or status == "websocket_blocked":
         return "LAYER1_WS_CAMPAIGN_INCOMPLETE"
     if source_type == "REST":
@@ -645,6 +771,25 @@ def _write_campaign_manifest(
         "venue": summary.get("venue"),
         "source_type": summary.get("source_type"),
         "status": summary.get("status"),
+        "market_ticker": summary.get("market_ticker") or summary.get("market"),
+        "subscribed_market_ticker": summary.get("market_ticker") or summary.get("market"),
+        "event_ticker": summary.get("event_ticker"),
+        "title": summary.get("title") or summary.get("name"),
+        "name": summary.get("name") or summary.get("title"),
+        "status_at_launch": summary.get("status_at_launch"),
+        "market_status": summary.get("market_status") or summary.get("status_at_launch"),
+        "open_time": summary.get("open_time"),
+        "close_time": summary.get("close_time"),
+        "expected_expiration": summary.get("expected_expiration"),
+        "occurrence_time": summary.get("occurrence_time"),
+        "settlement_time": summary.get("settlement_time"),
+        "listed_expiration": summary.get("listed_expiration"),
+        "selected_at_utc": summary.get("selected_at_utc"),
+        "campaign_expected_end_utc": summary.get("campaign_expected_end_utc"),
+        "time_to_close_at_launch_seconds": summary.get("time_to_close_at_launch_seconds"),
+        "selection_reason": summary.get("selection_reason"),
+        "selection_gate_result": summary.get("selection_gate_result"),
+        "selection_gate_rejection_reason": summary.get("selection_gate_rejection_reason"),
         "validation_status": (validation or {}).get("status") or summary.get("validation_status"),
         "evidence_classification": (validation or {}).get("evidence_classification")
         or summary.get("evidence_classification"),
@@ -659,6 +804,12 @@ def _write_campaign_manifest(
         "gap_count": summary.get("gap_count", 0),
         "last_event_time": summary.get("last_event_time"),
         "stale_seconds": summary.get("stale_seconds"),
+        "supervisor_liveness_status": summary.get("supervisor_liveness_status"),
+        "campaign_process_liveness_status": summary.get("campaign_process_liveness_status"),
+        "websocket_message_freshness_status": summary.get("websocket_message_freshness_status"),
+        "market_lifecycle_status": (validation or {}).get("market_lifecycle_status")
+        or _market_lifecycle_status(summary),
+        "exchange_heartbeat_status": summary.get("exchange_heartbeat_status") or "UNKNOWN",
         "rebuild_frame_count": summary.get("rebuild_frame_count", 0),
         "live_gate_status": summary.get("live_gate_status"),
         "submit_attempts": summary.get("submit_attempts", summary.get("submit_attempt_count", 0)),
@@ -685,6 +836,12 @@ def _write_run_metadata(
         "duration_seconds": summary.get("duration_seconds"),
         "mode": summary.get("mode"),
         "status": summary.get("status"),
+        "market_ticker": summary.get("market_ticker") or summary.get("market"),
+        "market_status": summary.get("market_status") or summary.get("status_at_launch"),
+        "close_time": summary.get("close_time"),
+        "campaign_expected_end_utc": summary.get("campaign_expected_end_utc"),
+        "selection_gate_result": summary.get("selection_gate_result"),
+        "selection_gate_rejection_reason": summary.get("selection_gate_rejection_reason"),
         "validation_status": (validation or {}).get("status") or summary.get("validation_status"),
         "evidence_classification": (validation or {}).get("evidence_classification")
         or summary.get("evidence_classification"),
@@ -752,6 +909,149 @@ def _has_secret_key(value: object) -> bool:
 
 def _as_int(value: object) -> int:
     return value if isinstance(value, int) else 0
+
+
+def _default_lifecycle_record(
+    market: str,
+    selected_at_utc: datetime,
+    duration_seconds: int,
+) -> dict[str, object]:
+    return {
+        "market_ticker": market,
+        "event_ticker": None,
+        "title": None,
+        "name": None,
+        "status_at_launch": None,
+        "market_status": None,
+        "open_time": None,
+        "close_time": None,
+        "expected_expiration": None,
+        "occurrence_time": None,
+        "settlement_time": None,
+        "listed_expiration": None,
+        "selected_at_utc": selected_at_utc.isoformat(),
+        "campaign_expected_end_utc": (
+            selected_at_utc + timedelta(seconds=duration_seconds)
+        ).isoformat(),
+        "time_to_close_at_launch_seconds": None,
+        "selection_reason": "bounded_smoke",
+        "selection_gate_result": "not_required",
+        "selection_gate_rejection_reason": None,
+        "market_lifecycle_status": "UNKNOWN",
+    }
+
+
+def _market_lifecycle_record(
+    market_metadata: Mapping[str, object],
+    *,
+    selected_at_utc: datetime,
+    duration_seconds: int,
+    safety_buffer_seconds: int,
+    selection_reason: str,
+    result: str,
+    reason: str | None,
+) -> dict[str, object]:
+    close_time = _first_metadata_time(
+        market_metadata,
+        "close_time",
+        "expected_expiration",
+        "expiration_time",
+        "occurrence_time",
+        "listed_expiration",
+    )
+    market_ticker = (
+        market_metadata.get("market_ticker")
+        or market_metadata.get("ticker")
+        or market_metadata.get("market")
+    )
+    title = market_metadata.get("title") or market_metadata.get("name")
+    status = str(market_metadata.get("status") or "").strip().lower() or None
+    return {
+        "market_ticker": market_ticker,
+        "event_ticker": market_metadata.get("event_ticker"),
+        "title": title,
+        "name": market_metadata.get("name") or title,
+        "status_at_launch": status,
+        "market_status": status,
+        "open_time": _time_text(market_metadata.get("open_time")),
+        "close_time": _time_text(market_metadata.get("close_time")),
+        "expected_expiration": _time_text(market_metadata.get("expected_expiration")),
+        "occurrence_time": _time_text(market_metadata.get("occurrence_time")),
+        "settlement_time": _time_text(market_metadata.get("settlement_time")),
+        "listed_expiration": _time_text(market_metadata.get("listed_expiration")),
+        "selected_at_utc": selected_at_utc.isoformat(),
+        "campaign_expected_end_utc": (
+            selected_at_utc + timedelta(seconds=duration_seconds)
+        ).isoformat(),
+        "time_to_close_at_launch_seconds": (
+            int((close_time - selected_at_utc).total_seconds()) if close_time else None
+        ),
+        "selection_reason": selection_reason,
+        "selection_gate_result": result,
+        "selection_gate_rejection_reason": reason,
+        "selection_safety_buffer_seconds": safety_buffer_seconds,
+        "market_lifecycle_status": _status_lifecycle(status),
+    }
+
+
+def _first_metadata_time(market_metadata: Mapping[str, object], *keys: str) -> datetime | None:
+    for key in keys:
+        parsed = _parse_time(market_metadata.get(key))
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def _parse_time(value: object) -> datetime | None:
+    if isinstance(value, datetime):
+        parsed = value
+    elif isinstance(value, str) and value:
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    else:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
+
+
+def _time_text(value: object) -> str | None:
+    parsed = _parse_time(value)
+    if parsed is not None:
+        return parsed.isoformat()
+    return value if isinstance(value, str) and value else None
+
+
+def _is_empty_orderbook(market_metadata: Mapping[str, object]) -> bool:
+    if market_metadata.get("orderbook_empty") is True:
+        return True
+    if market_metadata.get("has_orderbook") is False:
+        return True
+    level_count = market_metadata.get("orderbook_level_count")
+    return isinstance(level_count, int) and level_count <= 0
+
+
+def _market_lifecycle_status(summary: Mapping[str, object]) -> str:
+    status = str(summary.get("market_status") or summary.get("status_at_launch") or "").lower()
+    return _status_lifecycle(status or None)
+
+
+def _status_lifecycle(status: str | None) -> str:
+    if status in OPEN_MARKET_STATUSES:
+        return "OPEN"
+    if status in CLOSED_OR_FINAL_STATUSES:
+        return "CLOSED_OR_FINALIZED"
+    if status == "paused":
+        return "PAUSED"
+    if status == "unopened":
+        return "UNOPENED"
+    return "UNKNOWN"
+
+
+def _market_closed_or_finalized(summary: Mapping[str, object]) -> bool:
+    return _market_lifecycle_status(summary) == "CLOSED_OR_FINALIZED"
 
 
 def _write_json(path: Path, payload: dict[str, object]) -> None:
