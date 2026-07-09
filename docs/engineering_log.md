@@ -8,6 +8,22 @@ on correctness, staged delivery, risk boundaries, deterministic tests, and the
 ability to explain how a trading research platform is built from safe
 foundations.
 
+## Round 8C-D1 Demo market discovery
+
+The first VPS WebSocket smoke stopped with `NO_ACTIVE_DEMO_MARKET`, but a
+bounded REST diagnostic found thousands of `status=open` results. Kalshi REST
+returned `active` in each market record, the first 20 results all had empty
+orderbooks, and later results contained non-empty books. The old selector read
+only those first 20 records, did not follow the cursor, and collapsed HTTP,
+parse, and eligibility failures into one blocker.
+
+The corrected selector follows at most five 1,000-market pages, maps REST
+statuses into the lifecycle gate while preserving the raw value, prioritizes
+current quote-size indicators before bounded orderbook probes, and emits
+structured blockers. A five-minute smoke uses a 900-second safety buffer;
+seven-day selection retains the strict 86,400-second buffer. No production or
+order-write behavior is added.
+
 ## Round 8B public lifecycle gates
 
 Round 8B tightened the public read-only campaign boundary after private ops

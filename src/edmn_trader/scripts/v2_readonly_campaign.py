@@ -6,16 +6,23 @@ import argparse
 import json
 import sys
 import time
+from collections import Counter
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 from edmn_trader.adapters.kalshi import (
+    KalshiClientError,
     KalshiDemoMarketDataClient,
+    KalshiEmptyOrderBookError,
+    KalshiHTTPError,
     KalshiReadOnlyRecorderConfig,
+    KalshiResponseError,
     KalshiWsAuthBlocked,
     KalshiWsRecorderConfig,
     load_kalshi_ws_auth_config_from_env,
+    normalize_kalshi_market_metadata,
     record_kalshi_demo_ws_orderbook,
     record_kalshi_readonly_orderbook,
 )
@@ -30,6 +37,9 @@ SCHEMA_VERSION = "v2.readonly_campaign.v1"
 SOURCE_TYPES = {"SYNTHETIC", "REST", "WEBSOCKET_SNAPSHOT", "WEBSOCKET_DELTA"}
 WEBSOCKET_SOURCE_TYPES = {"WEBSOCKET_SNAPSHOT", "WEBSOCKET_DELTA"}
 DEFAULT_SELECTION_SAFETY_BUFFER_SECONDS = 86_400
+SMOKE_SELECTION_SAFETY_BUFFER_SECONDS = 900
+MARKET_DISCOVERY_PAGE_LIMIT = 1_000
+MAX_MARKET_DISCOVERY_PAGES = 5
 OPEN_MARKET_STATUSES = {"open", "trading"}
 MARKET_STATUS_REJECTION_REASONS = {
     "unopened": "MARKET_STATUS_UNOPENED",
@@ -83,6 +93,8 @@ def evaluate_market_selection(
     close_time = _first_metadata_time(
         market_metadata,
         "close_time",
+        "expected_expiration_time",
+        "latest_expiration_time",
         "expected_expiration",
         "expiration_time",
         "occurrence_time",
@@ -423,8 +435,14 @@ def run_kalshi_ws_smoke(
             credential_presence={"access_id_present": False, "signing_material_present": False},
         )
 
-    market = _select_kalshi_demo_ws_market(max_markets=max_markets)
-    if market is None:
+    discovery = discover_kalshi_demo_ws_market(
+        duration_seconds=duration_seconds,
+        safety_buffer_seconds=SMOKE_SELECTION_SAFETY_BUFFER_SECONDS,
+        selected_at_utc=generated_at,
+    )
+    market_metadata = discovery.get("market_metadata")
+    if not isinstance(market_metadata, Mapping):
+        blocker_code = str(discovery["blocker_code"])
         return _write_kalshi_ws_summary(
             output_dir=output_dir,
             campaign_id=campaign_id,
@@ -432,10 +450,12 @@ def run_kalshi_ws_smoke(
             max_markets=max_markets,
             generated_at=generated_at,
             status="websocket_blocked",
-            blocker_code="NO_ACTIVE_DEMO_MARKET",
-            blocker="NO_ACTIVE_DEMO_MARKET: no active Demo market with a non-empty orderbook.",
+            blocker_code=blocker_code,
+            blocker=blocker_code,
             credential_presence=auth.credential_presence,
+            discovery=discovery,
         )
+    market = str(market_metadata.get("ticker") or market_metadata["market_ticker"])
 
     recorder = record_kalshi_demo_ws_orderbook(
         KalshiWsRecorderConfig(
@@ -458,6 +478,8 @@ def run_kalshi_ws_smoke(
         blocker=recorder.blocker_code,
         credential_presence=auth.credential_presence,
         market_tickers=[market],
+        market_selection=discovery.get("selection"),
+        discovery=discovery,
         connection_established=recorder.connection_established,
         subscription_acknowledged=recorder.subscription_acknowledged,
         source_type=recorder.source_type,
@@ -490,6 +512,8 @@ def _write_kalshi_ws_summary(
     blocker: str | None,
     credential_presence: dict[str, bool],
     market_tickers: list[str] | None = None,
+    market_selection: object = None,
+    discovery: Mapping[str, object] | None = None,
     connection_established: bool = False,
     subscription_acknowledged: bool = False,
     source_type: str = "WEBSOCKET_SNAPSHOT",
@@ -510,10 +534,14 @@ def _write_kalshi_ws_summary(
     mode: str = "read_only_websocket_smoke",
 ) -> dict[str, object]:
     market_tickers = market_tickers or []
-    lifecycle = _default_lifecycle_record(
-        market_tickers[0] if market_tickers else "UNSELECTED",
-        generated_at,
-        duration_seconds,
+    lifecycle = (
+        dict(market_selection)
+        if isinstance(market_selection, Mapping)
+        else _default_lifecycle_record(
+            market_tickers[0] if market_tickers else "UNSELECTED",
+            generated_at,
+            duration_seconds,
+        )
     )
     heartbeat = {
         "record_type": "campaign_heartbeat",
@@ -571,6 +599,10 @@ def _write_kalshi_ws_summary(
         "blocker_code": blocker_code,
         "blocker": blocker,
         "credential_presence": credential_presence,
+        "market_discovery_pages": (discovery or {}).get("pages_fetched"),
+        "market_discovery_count": (discovery or {}).get("markets_seen"),
+        "market_discovery_cursor_remaining": (discovery or {}).get("cursor_remaining"),
+        "market_discovery_rejection_counts": (discovery or {}).get("rejection_counts", {}),
         "raw_event_path": raw_event_path,
         "raw_event_sha256": raw_event_sha256,
         "evidence_classification": "LAYER1_WS_CAMPAIGN_INCOMPLETE",
@@ -871,8 +903,14 @@ def run_kalshi_ws_campaign(
             mode="read_only_websocket_campaign",
         )
 
-    market = _select_kalshi_demo_ws_market(max_markets=max_markets)
-    if market is None:
+    discovery = discover_kalshi_demo_ws_market(
+        duration_seconds=duration_seconds,
+        safety_buffer_seconds=DEFAULT_SELECTION_SAFETY_BUFFER_SECONDS,
+        selected_at_utc=generated_at,
+    )
+    market_metadata = discovery.get("market_metadata")
+    if not isinstance(market_metadata, Mapping):
+        blocker_code = str(discovery["blocker_code"])
         return _write_kalshi_ws_summary(
             output_dir=output_dir,
             campaign_id=campaign_id,
@@ -880,11 +918,13 @@ def run_kalshi_ws_campaign(
             max_markets=max_markets,
             generated_at=generated_at,
             status="websocket_blocked",
-            blocker_code="NO_ACTIVE_DEMO_MARKET",
-            blocker="NO_ACTIVE_DEMO_MARKET",
+            blocker_code=blocker_code,
+            blocker=blocker_code,
             credential_presence=auth.credential_presence,
             mode="read_only_websocket_campaign",
+            discovery=discovery,
         )
+    market = str(market_metadata.get("ticker") or market_metadata["market_ticker"])
 
     def checkpoint(progress: dict[str, object]) -> None:
         _write_kalshi_ws_summary(
@@ -898,6 +938,8 @@ def run_kalshi_ws_campaign(
             blocker=None,
             credential_presence=auth.credential_presence,
             market_tickers=[market],
+            market_selection=discovery.get("selection"),
+            discovery=discovery,
             mode="read_only_websocket_campaign",
             **progress,
         )
@@ -913,6 +955,8 @@ def run_kalshi_ws_campaign(
         blocker=None,
         credential_presence=auth.credential_presence,
         market_tickers=[market],
+        market_selection=discovery.get("selection"),
+        discovery=discovery,
         mode="read_only_websocket_campaign",
     )
     recorder = record_kalshi_demo_ws_orderbook(
@@ -939,6 +983,8 @@ def run_kalshi_ws_campaign(
         blocker=recorder.blocker_code,
         credential_presence=auth.credential_presence,
         market_tickers=[market],
+        market_selection=discovery.get("selection"),
+        discovery=discovery,
         connection_established=recorder.connection_established,
         subscription_acknowledged=recorder.subscription_acknowledged,
         source_type=recorder.source_type,
@@ -1043,9 +1089,12 @@ def _write_campaign_manifest(
         "name": summary.get("name") or summary.get("title"),
         "status_at_launch": summary.get("status_at_launch"),
         "market_status": summary.get("market_status") or summary.get("status_at_launch"),
+        "raw_market_status": summary.get("raw_market_status"),
         "open_time": summary.get("open_time"),
         "close_time": summary.get("close_time"),
         "expected_expiration": summary.get("expected_expiration"),
+        "expected_expiration_time": summary.get("expected_expiration_time"),
+        "latest_expiration_time": summary.get("latest_expiration_time"),
         "occurrence_time": summary.get("occurrence_time"),
         "settlement_time": summary.get("settlement_time"),
         "listed_expiration": summary.get("listed_expiration"),
@@ -1055,6 +1104,12 @@ def _write_campaign_manifest(
         "selection_reason": summary.get("selection_reason"),
         "selection_gate_result": summary.get("selection_gate_result"),
         "selection_gate_rejection_reason": summary.get("selection_gate_rejection_reason"),
+        "market_discovery_pages": summary.get("market_discovery_pages"),
+        "market_discovery_count": summary.get("market_discovery_count"),
+        "market_discovery_cursor_remaining": summary.get("market_discovery_cursor_remaining"),
+        "market_discovery_rejection_counts": summary.get(
+            "market_discovery_rejection_counts", {}
+        ),
         "validation_status": (validation or {}).get("status") or summary.get("validation_status"),
         "evidence_classification": (validation or {}).get("evidence_classification")
         or summary.get("evidence_classification"),
@@ -1111,10 +1166,17 @@ def _write_run_metadata(
         "status": summary.get("status"),
         "market_ticker": summary.get("market_ticker") or summary.get("market"),
         "market_status": summary.get("market_status") or summary.get("status_at_launch"),
+        "raw_market_status": summary.get("raw_market_status"),
         "close_time": summary.get("close_time"),
         "campaign_expected_end_utc": summary.get("campaign_expected_end_utc"),
         "selection_gate_result": summary.get("selection_gate_result"),
         "selection_gate_rejection_reason": summary.get("selection_gate_rejection_reason"),
+        "market_discovery_pages": summary.get("market_discovery_pages"),
+        "market_discovery_count": summary.get("market_discovery_count"),
+        "market_discovery_cursor_remaining": summary.get("market_discovery_cursor_remaining"),
+        "market_discovery_rejection_counts": summary.get(
+            "market_discovery_rejection_counts", {}
+        ),
         "validation_status": (validation or {}).get("status") or summary.get("validation_status"),
         "evidence_classification": (validation or {}).get("evidence_classification")
         or summary.get("evidence_classification"),
@@ -1134,27 +1196,174 @@ def _write_run_metadata(
     _write_json(root / "run_metadata.json", metadata)
 
 
-def _select_kalshi_demo_ws_market(*, max_markets: int) -> str | None:
+def discover_kalshi_demo_ws_market(
+    *,
+    duration_seconds: int,
+    safety_buffer_seconds: int,
+    selected_at_utc: datetime,
+    client: KalshiDemoMarketDataClient | None = None,
+    max_pages: int = MAX_MARKET_DISCOVERY_PAGES,
+) -> dict[str, object]:
+    """Find one lifecycle-eligible Demo market without hiding discovery failures."""
+
+    active_client = client or KalshiDemoMarketDataClient()
+    owns_client = client is None
+    cursor: str | None = None
+    pages_fetched = 0
+    markets_seen = 0
+    rejection_counts: Counter[str] = Counter()
+    orderbook_http_error = False
+    orderbook_parse_error = False
     try:
-        with KalshiDemoMarketDataClient() as client:
-            payload = client.list_markets(limit=max(1, max_markets * 20), status="open")
-            markets = payload.get("markets")
-            if not isinstance(markets, list):
-                return None
-            for item in markets:
-                if not isinstance(item, dict):
+        for _ in range(max_pages):
+            try:
+                payload = active_client.list_markets(
+                    limit=MARKET_DISCOVERY_PAGE_LIMIT,
+                    cursor=cursor,
+                    status="open",
+                )
+            except KalshiHTTPError:
+                return _market_discovery_blocker(
+                    "DEMO_MARKET_DISCOVERY_HTTP_ERROR",
+                    pages_fetched=pages_fetched,
+                    markets_seen=markets_seen,
+                    rejection_counts=rejection_counts,
+                )
+            except KalshiResponseError:
+                return _market_discovery_blocker(
+                    "DEMO_MARKET_DISCOVERY_PARSE_ERROR",
+                    pages_fetched=pages_fetched,
+                    markets_seen=markets_seen,
+                    rejection_counts=rejection_counts,
+                )
+            except KalshiClientError:
+                return _market_discovery_blocker(
+                    "DEMO_MARKET_DISCOVERY_HTTP_ERROR",
+                    pages_fetched=pages_fetched,
+                    markets_seen=markets_seen,
+                    rejection_counts=rejection_counts,
+                )
+
+            pages_fetched += 1
+            raw_markets = payload.get("markets", [])
+            normalized_markets = [
+                normalize_kalshi_market_metadata(item)
+                for item in raw_markets
+                if isinstance(item, Mapping)
+            ]
+            markets_seen += len(normalized_markets)
+            normalized_markets.sort(key=lambda item: not _has_current_quote_indicator(item))
+            for market_metadata in normalized_markets:
+                selection = evaluate_market_selection(
+                    market_metadata,
+                    selected_at_utc=selected_at_utc,
+                    duration_seconds=duration_seconds,
+                    safety_buffer_seconds=safety_buffer_seconds,
+                    selection_reason="kalshi_demo_paginated_market_discovery",
+                    require_non_empty_orderbook=False,
+                )
+                rejection = selection.get("selection_gate_rejection_reason")
+                if rejection:
+                    rejection_counts[str(rejection)] += 1
                     continue
-                ticker = item.get("ticker") or item.get("market_ticker")
+                ticker = market_metadata.get("ticker") or market_metadata.get("market_ticker")
                 if not isinstance(ticker, str) or not ticker:
+                    rejection_counts["MISSING_MARKET_METADATA"] += 1
                     continue
                 try:
-                    client.get_market_orderbook(ticker)
-                except Exception:
+                    orderbook = active_client.get_market_orderbook(ticker)
+                except KalshiEmptyOrderBookError:
+                    rejection_counts["EMPTY_ORDERBOOK"] += 1
                     continue
-                return ticker
-    except Exception:
-        return None
-    return None
+                except KalshiHTTPError:
+                    rejection_counts["ORDERBOOK_HTTP_ERROR"] += 1
+                    orderbook_http_error = True
+                    continue
+                except KalshiResponseError:
+                    rejection_counts["ORDERBOOK_PARSE_ERROR"] += 1
+                    orderbook_parse_error = True
+                    continue
+                except KalshiClientError:
+                    rejection_counts["ORDERBOOK_HTTP_ERROR"] += 1
+                    orderbook_http_error = True
+                    continue
+                book = orderbook["orderbook_fp"]
+                level_count = len(book["yes_dollars"]) + len(book["no_dollars"])
+                selected_metadata = {**market_metadata, "orderbook_level_count": level_count}
+                selected = evaluate_market_selection(
+                    selected_metadata,
+                    selected_at_utc=selected_at_utc,
+                    duration_seconds=duration_seconds,
+                    safety_buffer_seconds=safety_buffer_seconds,
+                    selection_reason="kalshi_demo_paginated_market_discovery",
+                )
+                return {
+                    "market_metadata": selected_metadata,
+                    "selection": selected,
+                    "blocker_code": None,
+                    "pages_fetched": pages_fetched,
+                    "markets_seen": markets_seen,
+                    "rejection_counts": dict(sorted(rejection_counts.items())),
+                    "cursor_remaining": bool(payload.get("cursor")),
+                }
+
+            next_cursor = payload.get("cursor")
+            cursor = next_cursor if isinstance(next_cursor, str) and next_cursor else None
+            if cursor is None:
+                break
+    finally:
+        if owns_client:
+            active_client.close()
+
+    if markets_seen == 0:
+        blocker_code = "DEMO_NO_OPEN_MARKETS"
+    elif orderbook_http_error:
+        blocker_code = "DEMO_MARKET_DISCOVERY_HTTP_ERROR"
+    elif orderbook_parse_error:
+        blocker_code = "DEMO_MARKET_DISCOVERY_PARSE_ERROR"
+    else:
+        blocker_code = "DEMO_NO_ELIGIBLE_MARKET"
+    return _market_discovery_blocker(
+        blocker_code,
+        pages_fetched=pages_fetched,
+        markets_seen=markets_seen,
+        rejection_counts=rejection_counts,
+        cursor_remaining=cursor is not None,
+    )
+
+
+def _market_discovery_blocker(
+    blocker_code: str,
+    *,
+    pages_fetched: int,
+    markets_seen: int,
+    rejection_counts: Mapping[str, int],
+    cursor_remaining: bool = False,
+) -> dict[str, object]:
+    return {
+        "market_metadata": None,
+        "selection": None,
+        "blocker_code": blocker_code,
+        "pages_fetched": pages_fetched,
+        "markets_seen": markets_seen,
+        "rejection_counts": dict(sorted(rejection_counts.items())),
+        "cursor_remaining": cursor_remaining,
+    }
+
+
+def _has_current_quote_indicator(market_metadata: Mapping[str, object]) -> bool:
+    for field in (
+        "yes_bid_size_fp",
+        "yes_ask_size_fp",
+        "no_bid_size_fp",
+        "no_ask_size_fp",
+    ):
+        try:
+            if Decimal(str(market_metadata.get(field) or "0")) > 0:
+                return True
+        except InvalidOperation:
+            continue
+    return False
 
 
 def _read_json(path: Path, failures: list[str]) -> dict[str, object]:
@@ -1226,9 +1435,12 @@ def _default_lifecycle_record(
         "name": None,
         "status_at_launch": None,
         "market_status": None,
+        "raw_market_status": None,
         "open_time": None,
         "close_time": None,
         "expected_expiration": None,
+        "expected_expiration_time": None,
+        "latest_expiration_time": None,
         "occurrence_time": None,
         "settlement_time": None,
         "listed_expiration": None,
@@ -1257,6 +1469,8 @@ def _market_lifecycle_record(
     close_time = _first_metadata_time(
         market_metadata,
         "close_time",
+        "expected_expiration_time",
+        "latest_expiration_time",
         "expected_expiration",
         "expiration_time",
         "occurrence_time",
@@ -1276,9 +1490,14 @@ def _market_lifecycle_record(
         "name": market_metadata.get("name") or title,
         "status_at_launch": status,
         "market_status": status,
+        "raw_market_status": market_metadata.get("raw_status") or status,
         "open_time": _time_text(market_metadata.get("open_time")),
         "close_time": _time_text(market_metadata.get("close_time")),
         "expected_expiration": _time_text(market_metadata.get("expected_expiration")),
+        "expected_expiration_time": _time_text(
+            market_metadata.get("expected_expiration_time")
+        ),
+        "latest_expiration_time": _time_text(market_metadata.get("latest_expiration_time")),
         "occurrence_time": _time_text(market_metadata.get("occurrence_time")),
         "settlement_time": _time_text(market_metadata.get("settlement_time")),
         "listed_expiration": _time_text(market_metadata.get("listed_expiration")),

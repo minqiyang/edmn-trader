@@ -13,6 +13,16 @@ from edmn_trader.core.models import NormalizedOrderBook
 
 KALSHI_DEMO_REST_BASE_URL = "https://external-api.demo.kalshi.co/trade-api/v2"
 _USER_AGENT = "edmn-trader/0.1 read-only-demo-client"
+_MARKET_STATUS_MAP = {
+    "initialized": "unopened",
+    "active": "open",
+    "inactive": "paused",
+    "closed": "closed",
+    "determined": "closed",
+    "disputed": "closed",
+    "amended": "closed",
+    "finalized": "settled",
+}
 
 
 class KalshiClientError(Exception):
@@ -153,6 +163,18 @@ class KalshiDemoMarketDataClient:
             raise KalshiResponseError(msg)
 
         return payload
+
+
+def normalize_kalshi_market_metadata(
+    market: Mapping[str, object],
+) -> dict[str, object]:
+    """Normalize REST lifecycle status while preserving the exchange value."""
+
+    normalized = dict(market)
+    raw_status = str(market.get("status") or "").strip().lower()
+    normalized["raw_status"] = raw_status or None
+    normalized["status"] = _MARKET_STATUS_MAP.get(raw_status, raw_status or None)
+    return normalized
 
 
 def _normalize_base_url(base_url: str) -> str:

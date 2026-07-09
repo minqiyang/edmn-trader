@@ -197,8 +197,9 @@ context, then read only the files needed for the requested stage. Use `rg` and
 - `src/edmn_trader/scripts/daily_validation_report.py`: importable Stage 48
   daily validation report CLI entry point.
 - `src/edmn_trader/scripts/v2_readonly_campaign.py`: V2 read-only campaign
-  planning, smoke, validation, manifest, lifecycle gate, and evidence
-  classification helper. Read before any recorder campaign gate work.
+  planning, paginated Demo market discovery, smoke, validation, manifest,
+  lifecycle gate, and evidence classification helper. Read before any recorder
+  campaign gate work.
 - `src/edmn_trader/scripts/kalshi_demo_connector.py`: importable Stage 49
   guarded Kalshi Demo connector preview CLI entry point.
 - `src/edmn_trader/scripts/kalshi_demo_reconciliation.py`: importable Stage 50

@@ -1,16 +1,23 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 
 import httpx
 import pytest
 
-from edmn_trader.adapters.kalshi import KalshiDemoMarketDataClient, KalshiReadOnlyOptInRequired
+from edmn_trader.adapters.kalshi import (
+    KalshiDemoMarketDataClient,
+    KalshiReadOnlyOptInRequired,
+    normalize_kalshi_market_metadata,
+)
 from edmn_trader.cli.monitor import build_monitor_snapshot, render_snapshot
 from edmn_trader.scripts.v2_readonly_campaign import (
     SEVEN_DAY_SECONDS,
+    SMOKE_SELECTION_SAFETY_BUFFER_SECONDS,
+    discover_kalshi_demo_ws_market,
     evaluate_market_selection,
     plan_campaign,
     plan_kalshi_ws_campaign,
@@ -105,6 +112,146 @@ def test_market_selection_rejects_missing_close_time_and_empty_orderbook() -> No
         )["selection_gate_rejection_reason"]
         == "EMPTY_ORDERBOOK"
     )
+
+
+def test_smoke_and_seven_day_selection_profiles_remain_distinct() -> None:
+    short_lived = normalize_kalshi_market_metadata(
+        _market_metadata(status="active", close_time="2026-07-03T20:00:00Z")
+    )
+
+    smoke = evaluate_market_selection(
+        short_lived,
+        selected_at_utc=NOW,
+        duration_seconds=300,
+        safety_buffer_seconds=SMOKE_SELECTION_SAFETY_BUFFER_SECONDS,
+    )
+    seven_day = evaluate_market_selection(
+        short_lived,
+        selected_at_utc=NOW,
+        duration_seconds=SEVEN_DAY_SECONDS,
+    )
+    long_lived = evaluate_market_selection(
+        normalize_kalshi_market_metadata(
+            _market_metadata(status="active", close_time="2026-07-20T00:00:00Z")
+        ),
+        selected_at_utc=NOW,
+        duration_seconds=SEVEN_DAY_SECONDS,
+    )
+
+    assert smoke["selection_gate_result"] == "pass"
+    assert smoke["raw_market_status"] == "active"
+    assert seven_day["selection_gate_rejection_reason"] == "TIME_TO_CLOSE_TOO_SHORT"
+    assert long_lived["selection_gate_result"] == "pass"
+
+
+def test_market_discovery_paginates_and_selects_active_market() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path.endswith("/markets"):
+            if request.url.params.get("cursor") == "page-2":
+                return httpx.Response(
+                    200,
+                    json={
+                        "markets": [
+                            _market_metadata(
+                                ticker="PAGE-2",
+                                status="active",
+                                close_time="2026-07-03T20:00:00Z",
+                            )
+                        ],
+                        "cursor": "",
+                    },
+                )
+            return httpx.Response(
+                200,
+                json={
+                    "markets": [
+                        _market_metadata(
+                            ticker="PAGE-1",
+                            status="active",
+                            close_time="2026-07-03T20:00:00Z",
+                        )
+                    ],
+                    "cursor": "page-2",
+                },
+            )
+        if request.url.path.endswith("PAGE-1/orderbook"):
+            return httpx.Response(
+                200,
+                json={"orderbook_fp": {"yes_dollars": [], "no_dollars": []}},
+            )
+        return httpx.Response(
+            200,
+            json={"orderbook_fp": {"yes_dollars": [["0.4000", "2.00"]], "no_dollars": []}},
+        )
+
+    result = discover_kalshi_demo_ws_market(
+        duration_seconds=300,
+        safety_buffer_seconds=SMOKE_SELECTION_SAFETY_BUFFER_SECONDS,
+        selected_at_utc=NOW,
+        client=_market_discovery_client(handler),
+    )
+
+    assert result["blocker_code"] is None
+    assert result["pages_fetched"] == 2
+    assert result["market_metadata"]["ticker"] == "PAGE-2"
+    assert result["market_metadata"]["status"] == "open"
+    assert result["market_metadata"]["raw_status"] == "active"
+    assert result["selection"]["selection_gate_result"] == "pass"
+    market_requests = [request for request in requests if request.url.path.endswith("/markets")]
+    assert [request.url.params.get("cursor") for request in market_requests] == [None, "page-2"]
+    assert all(request.method == "GET" for request in requests)
+    assert all(request.url.host == "external-api.demo.kalshi.co" for request in requests)
+
+
+def test_market_discovery_rejects_finalized_and_empty_results_explicitly() -> None:
+    finalized = discover_kalshi_demo_ws_market(
+        duration_seconds=300,
+        safety_buffer_seconds=SMOKE_SELECTION_SAFETY_BUFFER_SECONDS,
+        selected_at_utc=NOW,
+        client=_market_discovery_client(
+            lambda _request: httpx.Response(
+                200,
+                json={"markets": [_market_metadata(status="finalized")], "cursor": ""},
+            )
+        ),
+    )
+    empty = discover_kalshi_demo_ws_market(
+        duration_seconds=300,
+        safety_buffer_seconds=SMOKE_SELECTION_SAFETY_BUFFER_SECONDS,
+        selected_at_utc=NOW,
+        client=_market_discovery_client(
+            lambda _request: httpx.Response(200, json={"markets": [], "cursor": ""})
+        ),
+    )
+
+    assert finalized["blocker_code"] == "DEMO_NO_ELIGIBLE_MARKET"
+    assert finalized["rejection_counts"] == {"MARKET_STATUS_SETTLED": 1}
+    assert empty["blocker_code"] == "DEMO_NO_OPEN_MARKETS"
+
+
+@pytest.mark.parametrize(
+    ("response", "blocker_code"),
+    (
+        (httpx.Response(503, json={"code": "unavailable"}), "DEMO_MARKET_DISCOVERY_HTTP_ERROR"),
+        (httpx.Response(200, content=b"not-json"), "DEMO_MARKET_DISCOVERY_PARSE_ERROR"),
+    ),
+)
+def test_market_discovery_does_not_collapse_http_or_parse_errors(
+    response: httpx.Response,
+    blocker_code: str,
+) -> None:
+    result = discover_kalshi_demo_ws_market(
+        duration_seconds=300,
+        safety_buffer_seconds=SMOKE_SELECTION_SAFETY_BUFFER_SECONDS,
+        selected_at_utc=NOW,
+        client=_market_discovery_client(lambda _request: response),
+    )
+
+    assert result["blocker_code"] == blocker_code
+    assert result["blocker_code"] not in {"DEMO_NO_OPEN_MARKETS", "DEMO_NO_ELIGIBLE_MARKET"}
 
 
 def test_campaign_smoke_writes_bounded_readonly_artifacts(tmp_path: Path) -> None:
@@ -623,6 +770,14 @@ def _kalshi_client(requests: list[httpx.Request] | None = None) -> KalshiDemoMar
             requests.append(request)
         return httpx.Response(200, json=payload)
 
+    return KalshiDemoMarketDataClient(
+        http_client=httpx.Client(transport=httpx.MockTransport(handler))
+    )
+
+
+def _market_discovery_client(
+    handler: Callable[[httpx.Request], httpx.Response],
+) -> KalshiDemoMarketDataClient:
     return KalshiDemoMarketDataClient(
         http_client=httpx.Client(transport=httpx.MockTransport(handler))
     )

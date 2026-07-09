@@ -21,3 +21,16 @@ later than campaign duration plus at least 24 hours. Finalized, closed,
 settled, resolved, or expired markets end campaign usefulness even when raw
 artifact integrity still validates. Raw WebSocket data stays outside the public
 repo, and real-money trading remains disabled.
+
+Demo discovery uses `GET /markets?status=open` without timestamp filters and
+follows at most five cursor pages of up to 1,000 records each. REST response
+statuses are normalized for the lifecycle gate while the raw status is retained
+in campaign metadata. Discovery failures are distinct:
+
+- `DEMO_MARKET_DISCOVERY_HTTP_ERROR`
+- `DEMO_MARKET_DISCOVERY_PARSE_ERROR`
+- `DEMO_NO_OPEN_MARKETS`
+- `DEMO_NO_ELIGIBLE_MARKET`
+
+Bounded five-minute smoke selection uses a 900-second safety buffer. It does not
+reuse or weaken the seven-day duration plus 24-hour safety requirement.
