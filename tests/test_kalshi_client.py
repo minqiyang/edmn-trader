@@ -14,6 +14,7 @@ from edmn_trader.adapters.kalshi import (
     KalshiEmptyOrderBookError,
     KalshiHTTPError,
     KalshiResponseError,
+    normalize_kalshi_market_metadata,
 )
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -154,6 +155,18 @@ def test_empty_orderbook_is_rejected() -> None:
 
     with pytest.raises(KalshiEmptyOrderBookError, match="no YES or NO levels"):
         client.get_market_orderbook("DEMO-EVENT-MARKET")
+
+
+def test_market_metadata_normalizes_api_lifecycle_status_and_preserves_raw() -> None:
+    active = normalize_kalshi_market_metadata({"ticker": "ACTIVE", "status": "active"})
+    finalized = normalize_kalshi_market_metadata(
+        {"ticker": "FINALIZED", "status": "finalized"}
+    )
+
+    assert active["status"] == "open"
+    assert active["raw_status"] == "active"
+    assert finalized["status"] == "settled"
+    assert finalized["raw_status"] == "finalized"
 
 
 def _json_transport(payload: dict[str, Any]) -> httpx.MockTransport:

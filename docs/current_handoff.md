@@ -53,13 +53,19 @@ private live gate design and disabled public guard. Round 8B adds public
 read-only campaign lifecycle gates: market metadata now records status and
 close/expiration fields, seven-day WebSocket campaign planning rejects missing
 market metadata, finalized/closed/settled markets invalidate campaign evidence,
-and the monitor surfaces market lifecycle plus separate liveness fields.
+and the monitor surfaces market lifecycle plus separate liveness fields. Round
+8C-D1 corrects Demo market discovery by normalizing API status values such as
+`active`, following bounded cursor pagination, prioritizing current quoted
+liquidity before orderbook probes, preserving raw status metadata, and emitting
+distinct HTTP, parse, no-open-market, and no-eligible-market blockers. The
+five-minute profile uses a 15-minute safety buffer; the seven-day profile keeps
+the campaign duration plus 24-hour buffer.
 
 ## Last completed stage
 
 Stage 52 private live gate design and disabled public guard, plus Round 8B
 public lifecycle gates for read-only campaign selection, validation, manifest
-metadata, and monitor display.
+metadata, and monitor display, plus Round 8C-D1 bounded Demo market discovery.
 
 ## Stage plan status
 

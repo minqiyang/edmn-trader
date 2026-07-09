@@ -6,6 +6,11 @@ numbers while the repository is still in early research scaffolding.
 
 ## Unreleased
 
+- Corrected Kalshi Demo market discovery for bounded read-only WebSocket runs:
+  paginate `status=open` results, normalize REST lifecycle statuses, preserve
+  raw status metadata, separate discovery HTTP/parse failures from empty or
+  ineligible results, and keep the five-minute and seven-day time buffers
+  distinct. Production and order-write paths remain unavailable.
 - Added public Round 8B lifecycle gates for read-only recorder campaigns:
   market status and time-to-close checks, manifest lifecycle metadata,
   finalized/closed-market evidence invalidation, and monitor lifecycle/liveness
