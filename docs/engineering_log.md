@@ -30,10 +30,19 @@ semantics remain unknown: increasing values are observations, not proof of
 contiguous delivery. Legacy rows parse through a typed local-sequence-only view
 and cannot masquerade as native sequence evidence.
 
+Snapshot admission is market-specific inside a segment: one requested market's
+snapshot cannot admit another requested market's deltas. Missing and
+unrequested market tickers remain preserved but excluded.
+
 This checkpoint is fixture-only and does not add subscriptions, venue calls,
 book reconstruction, campaign qualification, execution behavior, or trading
 evidence. The existing summary `gap_count=0` remains unmeasured until a later,
 separately authorized integrity/classification stage.
+
+The merge review retained the parsed-payload hash contract and added explicit
+UTF-8, non-finite-number, and mutation checks. It also made non-object frames
+fail closed and extended secret-key rejection through nested sequences and all
+Kalshi authentication-header names.
 
 ## Round 8C-D1 Demo market discovery
 

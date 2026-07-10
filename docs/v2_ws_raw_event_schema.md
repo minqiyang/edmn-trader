@@ -38,7 +38,8 @@ Recorder-owned transport context is separate:
 
 Unknown native fields remain under `original_payload`. Secret-like keys,
 including authentication headers, signatures, API keys, tokens, and private
-key material, are rejected before an envelope can be constructed.
+key material, are rejected before an envelope can be constructed. Non-object
+WebSocket JSON is rejected rather than wrapped as a native object.
 
 ## Payload hash
 
@@ -61,6 +62,9 @@ This makes semantically identical parsed objects hash identically even when
 their object-key insertion order differs. It does not claim to preserve the
 original WebSocket frame's whitespace or wire encoding.
 
+Exact serialized-record chaining and closed-file hashing remain D2D work and
+are not evidence provided by `payload_sha256`.
+
 ## Sequence semantics
 
 The default continuity policy is `UNKNOWN`. Numeric monotonicity is therefore
@@ -71,7 +75,8 @@ observational only:
   `SEQUENCE_PRESENT_SEMANTICS_UNKNOWN`
 - later increasing integer under unknown semantics ->
   `SEQUENCE_OBSERVED_MONOTONIC`
-- duplicate or decreasing integer in one segment -> typed exclusion and resync
+- duplicate or decreasing integer in one segment -> conservative typed
+  exclusion and resync, without asserting documented exchange continuity
 - numeric jump under unknown semantics -> monotonic observation, not a gap
 - exact `+1` continuity or a numeric gap is asserted only under the explicit
   `CONTIGUOUS_INCREMENT` policy used by controlled fixtures
@@ -88,10 +93,12 @@ connection boundary followed immediately by a subscription boundary may
 advance the internal segment counter twice before the first row is emitted;
 only segments containing received rows appear in JSONL.
 
-Every orderbook segment begins with `RESYNC_REQUIRED` and no accepted
-snapshot. An `orderbook_snapshot` initializes that segment and changes its
-state to `RESYNCED_WITH_SNAPSHOT`. An `orderbook_delta` received first is still
-preserved raw but is `EXCLUDED` with `DELTA_BEFORE_SNAPSHOT`.
+Every orderbook segment begins with `RESYNC_REQUIRED` and no accepted snapshot
+for any requested market. An `orderbook_snapshot` initializes its market within
+that segment and changes that market's event state to
+`RESYNCED_WITH_SNAPSHOT`. A delta for any other requested market remains
+preserved raw but is `EXCLUDED` with `DELTA_BEFORE_SNAPSHOT` until that market
+has its own snapshot. Missing or unrequested market tickers are also excluded.
 
 A supported-policy gap, duplicate, or out-of-order observation is preserved,
 excluded, and marks resynchronization required. The following segment accepts

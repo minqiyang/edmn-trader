@@ -192,7 +192,9 @@ def _loads(raw: object) -> dict[str, object]:
     if isinstance(raw, bytes):
         raw = raw.decode("utf-8")
     payload = json.loads(str(raw))
-    return payload if isinstance(payload, dict) else {"message": payload}
+    if not isinstance(payload, dict):
+        raise ValueError("Kalshi WebSocket payload must be a JSON object")
+    return payload
 
 
 def _message_type(payload: Mapping[str, object]) -> str:

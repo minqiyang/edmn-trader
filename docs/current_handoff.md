@@ -3,11 +3,11 @@
 ## D2A native WebSocket evidence notice
 
 As of 2026-07-10, Phase 0A has passed and `origin/main` remains the authoritative
-public source state. The owner-authorized D2A branch introduces
+public source state. The owner-authorized D2A delivery introduces
 `edmn.kalshi.ws.raw.v2`: native SID/sequence fields remain distinct from local
 append order, connections and integrity segments are explicit, and orderbook
-deltas are excluded until their segment has a snapshot. The focused D2A change
-remains pending owner/expert review and does not authorize D2B-D2D.
+deltas are excluded until their market has a snapshot in the current segment.
+D2A does not authorize D2B-D2D.
 
 The bounded VPS snapshot smoke proves transport snapshot receipt only. It does
 not prove native sequence continuity, incremental rebuild integrity, replay
@@ -87,11 +87,13 @@ metadata, and monitor display, plus Round 8C-D1 bounded Demo market discovery.
 
 ## Current delivery checkpoint
 
-D2A raw WebSocket schema and transport integrity is implemented on a focused
-public branch for review. It adds the versioned native envelope, deterministic
-parsed-payload hash, typed conservative sequence states, connection and segment
-boundaries, snapshot-before-delta admission, resync metadata, explicit legacy
-parsing, and synthetic fixture tests. It does not implement D2B orderbook
+D2A raw WebSocket schema and transport integrity adds the versioned native
+envelope, deterministic parsed-payload hash, typed conservative sequence
+states, connection and segment boundaries, snapshot-before-delta admission,
+resync metadata, explicit legacy parsing, and synthetic fixture tests. Snapshot
+admission is tracked separately for each requested market. Its review gate also
+covers UTF-8/non-finite hash behavior, fail-closed non-object frames, and
+nested/auth-header secret rejection. It does not implement D2B orderbook
 rebuild, D2C trade/lifecycle channels, D2D campaign classifiers or durability,
 or any new network or execution behavior.
 
@@ -113,9 +115,8 @@ reconciliation, Stage 51 long-term paper/demo validation framework, and Stage
 52 private live gate design and disabled public guard. The
 ledger records purpose, known commit hashes, files/modules
 added, validation commands, status, next-stage boundary, and safety status for
-each completed stage. Stage 35-52 is complete. The current next action is to
-review the focused D2A pull request and merge it only if accepted. D2B remains
-a separate authorization boundary. No seven-day recorder launch is authorized
+each completed stage. Stage 35-52 is complete. D2B remains a separate owner
+authorization boundary after D2A. No seven-day recorder launch is authorized
 by this handoff.
 
 Report-input metadata expansion from Stages 11 through 34 is now
@@ -1506,18 +1507,15 @@ renamed, or noisy, use the equivalent checklist instead of debugging the skill.
 
 ## Next recommended action
 
-Owner/expert review the focused D2A pull request. Merge it only if the schema,
-legacy compatibility, conservative sequence semantics, and snapshot admission
-contract are accepted. D2B native orderbook rebuild requires a new, separate
-authorization after D2A is merged.
+Preserve the D2A evidence boundary. D2B native orderbook rebuild requires new,
+separate owner authorization and must not begin automatically.
 
 ## Exact next prompt suggestion
 
-Review the open D2A raw WebSocket schema and transport-integrity pull request.
-If accepted, merge D2A only. Do not begin D2B native orderbook rebuild without
-separate owner authorization, and do not authorize D2C, D2D, a campaign, or
-any order path as part of that review.
+Review the merged D2A evidence contract before proposing D2B. Request separate
+owner authorization for D2B only; do not authorize D2C, D2D, a campaign, or any
+order path in that request.
 
 ## Last updated timestamp
 
-2026-07-09 23:45:43 -07:00
+2026-07-10 00:21:45 -07:00

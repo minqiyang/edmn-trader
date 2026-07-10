@@ -43,6 +43,8 @@ class AdmissionStatus(StrEnum):
 
 class ExclusionReason(StrEnum):
     DELTA_BEFORE_SNAPSHOT = "DELTA_BEFORE_SNAPSHOT"
+    MISSING_MARKET_TICKER = "MISSING_MARKET_TICKER"
+    UNREQUESTED_MARKET_TICKER = "UNREQUESTED_MARKET_TICKER"
     SEQUENCE_DUPLICATE = "SEQUENCE_DUPLICATE"
     SEQUENCE_OUT_OF_ORDER = "SEQUENCE_OUT_OF_ORDER"
     SEQUENCE_GAP = "SEQUENCE_GAP"
@@ -340,8 +342,7 @@ class KalshiWsIntegrityTracker:
         self._has_bound_subscription = False
         self._subscription_command_id: str | int | None = None
         self._subscription_sid: str | int | None = None
-        self._snapshot_seen = False
-        self._resync_state = ResyncState.RESYNC_REQUIRED
+        self._snapshot_market_tickers: set[str] = set()
         self._last_native_seq: int | None = None
 
     def start_connection(self) -> None:
@@ -387,31 +388,45 @@ class KalshiWsIntegrityTracker:
         validate_no_secret_payload(payload)
 
         native_type = _native_str(payload, "type")
+        native_market_ticker = _native_str(payload, "market_ticker")
+        is_orderbook = native_type in {"orderbook_snapshot", "orderbook_delta"}
+        has_requested_market = native_market_ticker in self.requested_market_tickers
         native_sid = _native_identifier(payload, "sid")
         if native_sid is not None:
             if self._subscription_sid is not None and native_sid != self._subscription_sid:
                 self._start_segment(SegmentBoundaryReason.SID_CHANGE)
             self._subscription_sid = native_sid
         native_seq = _native_identifier(payload, "seq")
-        if native_type == "orderbook_snapshot" and not self._snapshot_seen:
+        if (
+            native_type == "orderbook_snapshot"
+            and has_requested_market
+            and not self._snapshot_market_tickers
+        ):
             self._last_native_seq = None
         sequence_state = self._sequence_state(
             native_seq,
-            continuity_eligible=native_type in {"orderbook_snapshot", "orderbook_delta"},
+            continuity_eligible=is_orderbook and has_requested_market,
         )
         admission_status = AdmissionStatus.NOT_APPLICABLE
         exclusion_reason = _sequence_exclusion_reason(sequence_state)
         integrity_failure = exclusion_reason is not None
+        resync_state = ResyncState.RESYNC_REQUIRED
         if integrity_failure:
             admission_status = AdmissionStatus.EXCLUDED
-            self._resync_state = ResyncState.RESYNC_REQUIRED
+        elif is_orderbook and native_market_ticker is None:
+            admission_status = AdmissionStatus.EXCLUDED
+            exclusion_reason = ExclusionReason.MISSING_MARKET_TICKER
+        elif is_orderbook and not has_requested_market:
+            admission_status = AdmissionStatus.EXCLUDED
+            exclusion_reason = ExclusionReason.UNREQUESTED_MARKET_TICKER
         elif native_type == "orderbook_snapshot":
             admission_status = AdmissionStatus.ADMITTED
-            self._snapshot_seen = True
-            self._resync_state = ResyncState.RESYNCED_WITH_SNAPSHOT
+            self._snapshot_market_tickers.add(native_market_ticker)
+            resync_state = ResyncState.RESYNCED_WITH_SNAPSHOT
         elif native_type == "orderbook_delta":
-            if self._snapshot_seen:
+            if native_market_ticker in self._snapshot_market_tickers:
                 admission_status = AdmissionStatus.ADMITTED
+                resync_state = ResyncState.RESYNCED_WITH_SNAPSHOT
             else:
                 admission_status = AdmissionStatus.EXCLUDED
                 exclusion_reason = ExclusionReason.DELTA_BEFORE_SNAPSHOT
@@ -436,11 +451,11 @@ class KalshiWsIntegrityTracker:
             exclusion_reason=exclusion_reason,
             sequence_continuity_policy=self.continuity_policy,
             sequence_state=sequence_state,
-            resync_state=self._resync_state,
+            resync_state=resync_state,
             native_type=native_type,
             native_sid=native_sid,
             native_seq=native_seq,
-            native_market_ticker=_native_str(payload, "market_ticker"),
+            native_market_ticker=native_market_ticker,
             native_market_id=_native_str(payload, "market_id"),
             native_exchange_ts=_native_scalar(payload, ("exchange_ts", "timestamp", "ts")),
             native_exchange_ts_ms=_native_int(
@@ -458,8 +473,7 @@ class KalshiWsIntegrityTracker:
         self._segment_id = f"{self.campaign_id}:segment:{self._segment_number:04d}"
         self._segment_boundary_reason = reason
         self._subscription_sid = None
-        self._snapshot_seen = False
-        self._resync_state = ResyncState.RESYNC_REQUIRED
+        self._snapshot_market_tickers.clear()
         self._last_native_seq = None
 
     def _sequence_state(

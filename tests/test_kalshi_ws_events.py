@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from datetime import UTC, datetime
 
 import pytest
@@ -84,6 +85,12 @@ def test_delta_before_snapshot_is_preserved_but_excluded() -> None:
     )
     tracker.start_connection()
     tracker.bind_subscription(command_id=1)
+    acknowledgement = _record(
+        tracker,
+        "subscribed",
+        seq=None,
+        local_row_index=1,
+    )
     payload = {
         "type": "orderbook_delta",
         "sid": 41,
@@ -93,11 +100,13 @@ def test_delta_before_snapshot_is_preserved_but_excluded() -> None:
 
     event = tracker.record(
         payload,
-        local_row_index=1,
+        local_row_index=2,
         received_at_utc=RECEIVED_AT,
         received_monotonic_ns=123_456,
     )
 
+    assert acknowledgement.admission_status is AdmissionStatus.NOT_APPLICABLE
+    assert acknowledgement.resync_state is ResyncState.RESYNC_REQUIRED
     assert event.original_payload == payload
     assert event.admission_status is AdmissionStatus.EXCLUDED
     assert event.exclusion_reason is ExclusionReason.DELTA_BEFORE_SNAPSHOT
@@ -132,6 +141,72 @@ def test_delta_envelope_preserves_native_timestamp_and_delta_fields() -> None:
     assert event.native_exchange_ts_ms == 1_783_648_923_000
     assert event.original_payload["msg"]["price"] == "0.43"
     assert event.original_payload["msg"]["delta"] == "2"
+
+
+def test_each_requested_market_requires_its_own_snapshot() -> None:
+    tracker = _tracker(requested_market_tickers=("MARKET-A", "MARKET-B"))
+    snapshot_a = _record(
+        tracker,
+        "orderbook_snapshot",
+        seq=100,
+        local_row_index=1,
+        market_ticker="MARKET-A",
+    )
+    early_delta_b = _record(
+        tracker,
+        "orderbook_delta",
+        seq=101,
+        local_row_index=2,
+        market_ticker="MARKET-B",
+    )
+    snapshot_b = _record(
+        tracker,
+        "orderbook_snapshot",
+        seq=102,
+        local_row_index=3,
+        market_ticker="MARKET-B",
+    )
+    delta_b = _record(
+        tracker,
+        "orderbook_delta",
+        seq=103,
+        local_row_index=4,
+        market_ticker="MARKET-B",
+    )
+
+    assert snapshot_a.admission_status is AdmissionStatus.ADMITTED
+    assert early_delta_b.admission_status is AdmissionStatus.EXCLUDED
+    assert early_delta_b.exclusion_reason is ExclusionReason.DELTA_BEFORE_SNAPSHOT
+    assert early_delta_b.resync_state is ResyncState.RESYNC_REQUIRED
+    assert snapshot_b.admission_status is AdmissionStatus.ADMITTED
+    assert delta_b.admission_status is AdmissionStatus.ADMITTED
+
+
+@pytest.mark.parametrize(
+    ("market_ticker", "reason"),
+    [
+        (None, ExclusionReason.MISSING_MARKET_TICKER),
+        ("OTHER-MARKET", ExclusionReason.UNREQUESTED_MARKET_TICKER),
+    ],
+)
+def test_snapshot_requires_a_requested_market_ticker(
+    market_ticker: str | None,
+    reason: ExclusionReason,
+) -> None:
+    payload: dict[str, object] = {"type": "orderbook_snapshot", "sid": 41, "seq": 100}
+    if market_ticker is not None:
+        payload["market_ticker"] = market_ticker
+
+    event = _tracker().record(
+        payload,
+        local_row_index=1,
+        received_at_utc=RECEIVED_AT,
+        received_monotonic_ns=123_457,
+    )
+
+    assert event.admission_status is AdmissionStatus.EXCLUDED
+    assert event.exclusion_reason is reason
+    assert event.resync_state is ResyncState.RESYNC_REQUIRED
 
 
 def test_unknown_sequence_policy_observes_monotonicity_without_claiming_continuity() -> None:
@@ -171,12 +246,13 @@ def test_non_orderbook_sequence_does_not_contaminate_orderbook_continuity() -> N
 
 
 def test_duplicate_is_excluded_and_fresh_snapshot_starts_resynced_segment() -> None:
-    tracker = _tracker(continuity_policy=SequenceContinuityPolicy.CONTIGUOUS_INCREMENT)
+    tracker = _tracker()
     first_snapshot = _record(tracker, "orderbook_snapshot", seq=100, local_row_index=1)
     duplicate = _record(tracker, "orderbook_delta", seq=100, local_row_index=2)
     fresh_snapshot = _record(tracker, "orderbook_snapshot", seq=500, local_row_index=3)
 
     assert duplicate.segment_id == first_snapshot.segment_id
+    assert duplicate.sequence_continuity_policy is SequenceContinuityPolicy.UNKNOWN
     assert duplicate.sequence_state is SequenceState.SEQUENCE_DUPLICATE
     assert duplicate.admission_status is AdmissionStatus.EXCLUDED
     assert duplicate.exclusion_reason is ExclusionReason.SEQUENCE_DUPLICATE
@@ -184,6 +260,19 @@ def test_duplicate_is_excluded_and_fresh_snapshot_starts_resynced_segment() -> N
     assert fresh_snapshot.segment_id != first_snapshot.segment_id
     assert fresh_snapshot.admission_status is AdmissionStatus.ADMITTED
     assert fresh_snapshot.resync_state is ResyncState.RESYNCED_WITH_SNAPSHOT
+
+
+def test_unknown_policy_decreasing_sequence_is_excluded_without_continuity_claim() -> None:
+    tracker = _tracker()
+    _record(tracker, "orderbook_snapshot", seq=100, local_row_index=1)
+
+    out_of_order = _record(tracker, "orderbook_delta", seq=99, local_row_index=2)
+
+    assert out_of_order.sequence_continuity_policy is SequenceContinuityPolicy.UNKNOWN
+    assert out_of_order.sequence_state is SequenceState.SEQUENCE_OUT_OF_ORDER
+    assert out_of_order.admission_status is AdmissionStatus.EXCLUDED
+    assert out_of_order.exclusion_reason is ExclusionReason.SEQUENCE_OUT_OF_ORDER
+    assert out_of_order.resync_state is ResyncState.RESYNC_REQUIRED
 
 
 @pytest.mark.parametrize(
@@ -220,6 +309,46 @@ def test_supported_sequence_failures_are_excluded_and_require_resync(
 def test_missing_sequence_is_explicitly_not_observed() -> None:
     event = _record(_tracker(), "orderbook_snapshot", seq=None, local_row_index=1)
 
+    assert event.native_seq is None
+    assert event.sequence_state is SequenceState.SEQUENCE_NOT_OBSERVED
+
+
+def test_nested_string_identifiers_are_preserved_without_numeric_inference() -> None:
+    event = _tracker().record(
+        {
+            "msg": {
+                "type": "orderbook_snapshot",
+                "sid": "sid-41",
+                "seq": "seq-9001",
+                "market_ticker": "DEMO-MARKET",
+            }
+        },
+        local_row_index=1,
+        received_at_utc=RECEIVED_AT,
+        received_monotonic_ns=123_457,
+    )
+
+    assert event.native_type == "orderbook_snapshot"
+    assert event.native_sid == "sid-41"
+    assert event.native_seq == "seq-9001"
+    assert event.sequence_state is SequenceState.SEQUENCE_PRESENT_SEMANTICS_UNKNOWN
+    assert event.admission_status is AdmissionStatus.ADMITTED
+
+
+def test_boolean_identifiers_are_not_treated_as_integers() -> None:
+    event = _tracker().record(
+        {
+            "type": "orderbook_snapshot",
+            "sid": True,
+            "seq": True,
+            "msg": {"market_ticker": "DEMO-MARKET"},
+        },
+        local_row_index=1,
+        received_at_utc=RECEIVED_AT,
+        received_monotonic_ns=123_457,
+    )
+
+    assert event.native_sid is None
     assert event.native_seq is None
     assert event.sequence_state is SequenceState.SEQUENCE_NOT_OBSERVED
 
@@ -313,7 +442,9 @@ def test_v2_parser_rejects_payload_hash_mismatch() -> None:
         seq=100,
         local_row_index=1,
     ).to_record()
-    record["payload_sha256"] = "0" * 64
+    original_payload = record["original_payload"]
+    assert isinstance(original_payload, dict)
+    original_payload["mutated"] = True
 
     with pytest.raises(ValueError, match="does not match"):
         parse_kalshi_ws_raw_record(record)
@@ -389,14 +520,47 @@ def test_payload_hash_uses_deterministic_canonical_json() -> None:
     assert payload_sha256(first) == payload_sha256(reordered)
 
 
-def test_secret_like_native_payload_is_rejected() -> None:
+def test_payload_hash_preserves_unicode_as_utf8() -> None:
+    expected = hashlib.sha256(b'{"label":"caf\xc3\xa9"}').hexdigest()
+
+    assert payload_sha256({"label": "caf\u00e9"}) == expected
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+def test_payload_hash_rejects_non_finite_numbers(value: float) -> None:
+    with pytest.raises(ValueError, match="Out of range float values"):
+        payload_sha256({"value": value})
+
+
+@pytest.mark.parametrize(
+    "header_name",
+    [
+        "KALSHI-ACCESS-KEY",
+        "KALSHI-ACCESS-SIGNATURE",
+        "KALSHI-ACCESS-TIMESTAMP",
+    ],
+)
+def test_secret_like_native_payload_is_rejected(header_name: str) -> None:
     tracker = _tracker()
 
     with pytest.raises(ValueError, match="must not contain credentials"):
         tracker.record(
             {
                 "type": "orderbook_snapshot",
-                "KALSHI-ACCESS-SIGNATURE": "not-a-real-secret",
+                header_name: "synthetic-auth-value",
+            },
+            local_row_index=1,
+            received_at_utc=RECEIVED_AT,
+            received_monotonic_ns=123_456,
+        )
+
+
+def test_secret_like_keys_nested_in_sequences_are_rejected() -> None:
+    with pytest.raises(ValueError, match="must not contain credentials"):
+        _tracker().record(
+            {
+                "type": "orderbook_snapshot",
+                "levels": [[{"api_key": "synthetic-auth-value"}]],
             },
             local_row_index=1,
             received_at_utc=RECEIVED_AT,
@@ -407,10 +571,11 @@ def test_secret_like_native_payload_is_rejected() -> None:
 def _tracker(
     *,
     continuity_policy: SequenceContinuityPolicy = SequenceContinuityPolicy.UNKNOWN,
+    requested_market_tickers: tuple[str, ...] = ("DEMO-MARKET",),
 ) -> KalshiWsIntegrityTracker:
     tracker = KalshiWsIntegrityTracker(
         campaign_id="campaign-1",
-        requested_market_tickers=("DEMO-MARKET",),
+        requested_market_tickers=requested_market_tickers,
         continuity_policy=continuity_policy,
     )
     tracker.start_connection()
@@ -425,11 +590,12 @@ def _record(
     seq: int | None,
     local_row_index: int,
     sid: int = 41,
+    market_ticker: str = "DEMO-MARKET",
 ):
     payload: dict[str, object] = {
         "type": native_type,
         "sid": sid,
-        "msg": {"market_ticker": "DEMO-MARKET"},
+        "msg": {"market_ticker": market_ticker},
     }
     if seq is not None:
         payload["seq"] = seq

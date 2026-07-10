@@ -4,6 +4,7 @@ import json
 from datetime import UTC, datetime
 from pathlib import Path
 
+import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 
@@ -16,6 +17,7 @@ from edmn_trader.adapters.kalshi.ws_events import (
 )
 from edmn_trader.adapters.kalshi.ws_recorder import (
     KalshiWsRecorderConfig,
+    _loads,
     record_kalshi_demo_ws_orderbook,
 )
 
@@ -121,6 +123,12 @@ def test_ws_recorder_reconnects_after_read_failure_with_existing_rows(
     assert records[1]["segment_boundary_reason"] == SegmentBoundaryReason.RESUBSCRIPTION
     assert records[1]["admission_status"] == AdmissionStatus.EXCLUDED
     assert records[1]["exclusion_reason"] == ExclusionReason.DELTA_BEFORE_SNAPSHOT
+
+
+@pytest.mark.parametrize("raw", ["[]", "null", "1"])
+def test_ws_payload_loader_rejects_non_object_json(raw: str) -> None:
+    with pytest.raises(ValueError, match="JSON object"):
+        _loads(raw)
 
 
 class _FakeWebSocket:
