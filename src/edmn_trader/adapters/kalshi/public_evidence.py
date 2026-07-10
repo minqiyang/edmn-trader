@@ -369,8 +369,8 @@ def build_public_trade_stream(
         ):
             quarantined += 1
             continue
-        trades.append(
-            KalshiPublicTradeEvidence(
+        try:
+            trade = KalshiPublicTradeEvidence(
                 campaign_id=event.campaign_id,
                 market_ticker=event.native_market_ticker,
                 connection_id=event.connection_id,
@@ -385,7 +385,10 @@ def build_public_trade_stream(
                 native_exchange_ts_ms=event.native_exchange_ts_ms,
                 native_trade_payload=payload,
             )
-        )
+        except (TypeError, ValueError):
+            quarantined += 1
+            continue
+        trades.append(trade)
     return PublicTradeEvidenceStream(
         selected_market_tickers=tuple(selected_market_tickers),
         trades=tuple(trades),

@@ -176,6 +176,29 @@ def test_accepted_trade_does_not_hide_quarantined_input() -> None:
     assert stream.status is PublicTradeStreamStatus.QUARANTINED_INPUT
 
 
+def test_conflicting_trade_identity_is_quarantined_without_aborting_stream() -> None:
+    conflicting = _event(
+        _tracker(markets=(MARKET, OTHER_MARKET)),
+        {
+            "type": "trade",
+            "market_ticker": MARKET,
+            "msg": {
+                "trade_id": "conflicting-trade",
+                "market_ticker": OTHER_MARKET,
+            },
+        },
+    )
+
+    stream = build_public_trade_stream(
+        [conflicting, _trade_event()],
+        selected_market_tickers=(MARKET,),
+    )
+
+    assert stream.trade_count == 1
+    assert stream.quarantined_count == 1
+    assert stream.status is PublicTradeStreamStatus.QUARANTINED_INPUT
+
+
 def test_zero_trade_fixture_is_valid_quiet_market_evidence() -> None:
     stream = build_public_trade_stream([], selected_market_tickers=(MARKET,))
 
