@@ -38,19 +38,51 @@ SOURCE_TYPES = {"SYNTHETIC", "REST", "WEBSOCKET_SNAPSHOT", "WEBSOCKET_DELTA"}
 WEBSOCKET_SOURCE_TYPES = {"WEBSOCKET_SNAPSHOT", "WEBSOCKET_DELTA"}
 DEFAULT_SELECTION_SAFETY_BUFFER_SECONDS = 86_400
 SMOKE_SELECTION_SAFETY_BUFFER_SECONDS = 900
+LONG_HORIZON_MIN_SECONDS = SEVEN_DAY_SECONDS
 MARKET_DISCOVERY_PAGE_LIMIT = 1_000
 MAX_MARKET_DISCOVERY_PAGES = 5
 OPEN_MARKET_STATUSES = {"open", "trading"}
 MARKET_STATUS_REJECTION_REASONS = {
+    "initialized": "MARKET_STATUS_UNOPENED",
     "unopened": "MARKET_STATUS_UNOPENED",
+    "inactive": "MARKET_STATUS_PAUSED",
     "paused": "MARKET_STATUS_PAUSED",
     "closed": "MARKET_STATUS_CLOSED",
     "settled": "MARKET_STATUS_SETTLED",
+    "determined": "MARKET_STATUS_DETERMINED",
+    "disputed": "MARKET_STATUS_DISPUTED",
+    "amended": "MARKET_STATUS_AMENDED",
     "finalized": "MARKET_STATUS_FINALIZED",
     "resolved": "MARKET_STATUS_FINALIZED",
     "expired": "MARKET_STATUS_CLOSED",
 }
-CLOSED_OR_FINAL_STATUSES = {"closed", "settled", "finalized", "resolved", "expired"}
+CLOSED_OR_FINAL_STATUSES = {
+    "closed",
+    "settled",
+    "finalized",
+    "resolved",
+    "expired",
+    "determined",
+    "disputed",
+    "amended",
+}
+CONSERVATIVE_LIFECYCLE_TIME_FIELDS = (
+    "close_time",
+    "expected_expiration_time",
+    "expected_expiration",
+    "occurrence_datetime",
+    "occurrence_time",
+    "early_close_deadline",
+    "early_close_time",
+    "settlement_time",
+)
+EXPECTED_EXPIRATION_FIELDS = ("expected_expiration_time", "expected_expiration")
+OCCURRENCE_FIELDS = ("occurrence_datetime", "occurrence_time")
+EARLY_CLOSE_DEADLINE_FIELDS = (
+    "early_close_deadline",
+    "early_close_time",
+    "early_close_condition_deadline",
+)
 SECRET_KEY_PARTS = (
     "api_key",
     "authorization",
@@ -71,6 +103,8 @@ def evaluate_market_selection(
     safety_buffer_seconds: int = DEFAULT_SELECTION_SAFETY_BUFFER_SECONDS,
     selection_reason: str = "read_only_campaign_selection",
     require_non_empty_orderbook: bool = True,
+    require_event_metadata: bool = False,
+    allow_sports_long_horizon: bool = False,
 ) -> dict[str, object]:
     if market_metadata is None:
         return _market_lifecycle_record(
@@ -90,28 +124,43 @@ def evaluate_market_selection(
     elif status not in OPEN_MARKET_STATUSES and reason is None:
         reason = "MARKET_STATUS_UNKNOWN"
 
-    close_time = _first_metadata_time(
-        market_metadata,
-        "close_time",
-        "expected_expiration_time",
-        "latest_expiration_time",
-        "expected_expiration",
-        "expiration_time",
-        "occurrence_time",
-        "listed_expiration",
+    campaign_required_end = selected_at_utc + timedelta(
+        seconds=duration_seconds + safety_buffer_seconds
     )
-    if reason is None and close_time is None:
-        reason = "MISSING_CLOSE_TIME"
+    expected_expiration = _first_metadata_time(market_metadata, *EXPECTED_EXPIRATION_FIELDS)
+    occurrence_time = _first_metadata_time(market_metadata, *OCCURRENCE_FIELDS)
+    early_close_deadline = _first_metadata_time(market_metadata, *EARLY_CLOSE_DEADLINE_FIELDS)
+    lifecycle_deadline = _earliest_metadata_time(
+        market_metadata, *CONSERVATIVE_LIFECYCLE_TIME_FIELDS
+    )
+    long_horizon = duration_seconds >= LONG_HORIZON_MIN_SECONDS
 
-    time_to_close = (
-        int((close_time - selected_at_utc).total_seconds()) if close_time else None
-    )
-    if (
-        reason is None
-        and time_to_close is not None
-        and time_to_close < duration_seconds + safety_buffer_seconds
-    ):
-        reason = "TIME_TO_CLOSE_TOO_SHORT"
+    if reason is None and require_event_metadata and not _event_metadata_fetched(market_metadata):
+        reason = "EVENT_METADATA_MISSING"
+    if reason is None and _as_bool(market_metadata.get("can_close_early")):
+        if expected_expiration is None and early_close_deadline is None:
+            reason = "CAN_CLOSE_EARLY_UNSAFE_FOR_DURATION"
+    if reason is None and expected_expiration is not None:
+        if expected_expiration <= campaign_required_end:
+            reason = "EXPECTED_EXPIRATION_TOO_SHORT"
+    if reason is None and long_horizon and occurrence_time is not None:
+        if occurrence_time <= campaign_required_end:
+            reason = "EVENT_OCCURRENCE_TOO_EARLY"
+    if reason is None and lifecycle_deadline is None:
+        reason = "MISSING_CLOSE_TIME"
+    if reason is None and lifecycle_deadline <= campaign_required_end:
+        if (
+            _parse_time(market_metadata.get("close_time")) == lifecycle_deadline
+            and expected_expiration is None
+            and occurrence_time is None
+            and early_close_deadline is None
+        ):
+            reason = "TIME_TO_CLOSE_TOO_SHORT"
+        else:
+            reason = "CONSERVATIVE_LIFECYCLE_DEADLINE_TOO_SHORT"
+    if reason is None and long_horizon and _is_sports_market(market_metadata):
+        if not allow_sports_long_horizon:
+            reason = "SPORTS_MATCH_UNSUITABLE_FOR_LONG_CAMPAIGN"
 
     if reason is None and require_non_empty_orderbook and _is_empty_orderbook(market_metadata):
         reason = "EMPTY_ORDERBOOK"
@@ -672,14 +721,6 @@ def validate_campaign(*, input_dir: Path) -> dict[str, object]:
             failures.append("recorder smoke must contain rebuild_frames.jsonl")
         if not daily_validation:
             failures.append("recorder smoke must contain daily_validation.jsonl")
-    if (
-        summary.get("mode") == "read_only_websocket_campaign"
-        and summary.get("selection_gate_result") != "pass"
-    ):
-        failures.append(
-            "market selection gate rejected: "
-            f"{summary.get('selection_gate_rejection_reason') or 'MARKET_STATUS_UNKNOWN'}"
-        )
     if _secret_like_files(input_dir):
         failures.append("secret-like field found in campaign artifacts")
     evidence_classification = _classify_campaign(
@@ -687,6 +728,15 @@ def validate_campaign(*, input_dir: Path) -> dict[str, object]:
         failures=failures,
         recorder_events=recorder_events,
         rebuild_frames=rebuild_frames,
+    )
+    market_evidence_valid = not _market_closed_or_finalized(summary) and not (
+        summary.get("mode") == "read_only_websocket_campaign"
+        and summary.get("selection_gate_result") != "pass"
+    )
+    evidence_validity_classification = (
+        "CAMPAIGN_EVIDENCE_VALID"
+        if market_evidence_valid
+        else "CAMPAIGN_EVIDENCE_INVALID_MARKET_LIFECYCLE"
     )
     status = "pass" if not failures else "fail"
     if not failures and str(summary.get("status", "")).startswith("websocket_"):
@@ -704,8 +754,8 @@ def validate_campaign(*, input_dir: Path) -> dict[str, object]:
         "data_integrity_classification": "DATA_INTEGRITY_FAIL"
         if failures
         else "DATA_INTEGRITY_PASS",
-        "campaign_evidence_valid": evidence_classification
-        != "MARKET_CLOSED_OR_FINALIZED_ENDS_CAMPAIGN_EVIDENCE",
+        "campaign_evidence_valid": market_evidence_valid,
+        "evidence_validity_classification": evidence_validity_classification,
         "market_lifecycle_status": _market_lifecycle_status(summary),
         "market_closed_or_finalized": _market_closed_or_finalized(summary),
         "heartbeat_count": len(heartbeats),
@@ -837,6 +887,7 @@ def plan_kalshi_ws_campaign(
         selected_at_utc=generated_at,
         duration_seconds=duration_seconds,
         selection_reason="kalshi_ws_campaign_requires_selected_market_metadata",
+        require_event_metadata=duration_seconds >= LONG_HORIZON_MIN_SECONDS,
     )
     selected_market = str(lifecycle.get("market_ticker") or "OWNER_SELECTED")
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -1087,6 +1138,12 @@ def _write_campaign_manifest(
         "event_ticker": summary.get("event_ticker"),
         "title": summary.get("title") or summary.get("name"),
         "name": summary.get("name") or summary.get("title"),
+        "event_category": summary.get("event_category"),
+        "event_title": summary.get("event_title"),
+        "event_subtitle": summary.get("event_subtitle"),
+        "event_metadata_fetched": summary.get("event_metadata_fetched"),
+        "category": summary.get("category"),
+        "market_type": summary.get("market_type"),
         "status_at_launch": summary.get("status_at_launch"),
         "market_status": summary.get("market_status") or summary.get("status_at_launch"),
         "raw_market_status": summary.get("raw_market_status"),
@@ -1096,11 +1153,22 @@ def _write_campaign_manifest(
         "expected_expiration_time": summary.get("expected_expiration_time"),
         "latest_expiration_time": summary.get("latest_expiration_time"),
         "occurrence_time": summary.get("occurrence_time"),
+        "occurrence_datetime": summary.get("occurrence_datetime"),
         "settlement_time": summary.get("settlement_time"),
+        "settlement_ts": summary.get("settlement_ts"),
         "listed_expiration": summary.get("listed_expiration"),
+        "can_close_early": summary.get("can_close_early"),
+        "early_close_condition": summary.get("early_close_condition"),
+        "early_close_deadline": summary.get("early_close_deadline"),
         "selected_at_utc": summary.get("selected_at_utc"),
         "campaign_expected_end_utc": summary.get("campaign_expected_end_utc"),
+        "campaign_required_end_utc": summary.get("campaign_required_end_utc"),
         "time_to_close_at_launch_seconds": summary.get("time_to_close_at_launch_seconds"),
+        "time_to_lifecycle_deadline_at_launch_seconds": summary.get(
+            "time_to_lifecycle_deadline_at_launch_seconds"
+        ),
+        "lifecycle_deadline": summary.get("lifecycle_deadline"),
+        "selection_safety_buffer_seconds": summary.get("selection_safety_buffer_seconds"),
         "selection_reason": summary.get("selection_reason"),
         "selection_gate_result": summary.get("selection_gate_result"),
         "selection_gate_rejection_reason": summary.get("selection_gate_rejection_reason"),
@@ -1214,6 +1282,7 @@ def discover_kalshi_demo_ws_market(
     rejection_counts: Counter[str] = Counter()
     orderbook_http_error = False
     orderbook_parse_error = False
+    long_horizon = duration_seconds >= LONG_HORIZON_MIN_SECONDS
     try:
         for _ in range(max_pages):
             try:
@@ -1254,8 +1323,9 @@ def discover_kalshi_demo_ws_market(
             markets_seen += len(normalized_markets)
             normalized_markets.sort(key=lambda item: not _has_current_quote_indicator(item))
             for market_metadata in normalized_markets:
+                candidate_metadata = market_metadata
                 selection = evaluate_market_selection(
-                    market_metadata,
+                    candidate_metadata,
                     selected_at_utc=selected_at_utc,
                     duration_seconds=duration_seconds,
                     safety_buffer_seconds=safety_buffer_seconds,
@@ -1266,7 +1336,30 @@ def discover_kalshi_demo_ws_market(
                 if rejection:
                     rejection_counts[str(rejection)] += 1
                     continue
-                ticker = market_metadata.get("ticker") or market_metadata.get("market_ticker")
+                if long_horizon:
+                    try:
+                        candidate_metadata = _with_event_metadata(
+                            active_client, candidate_metadata
+                        )
+                    except (KalshiClientError, KalshiResponseError):
+                        rejection_counts["EVENT_METADATA_MISSING"] += 1
+                        continue
+                    selection = evaluate_market_selection(
+                        candidate_metadata,
+                        selected_at_utc=selected_at_utc,
+                        duration_seconds=duration_seconds,
+                        safety_buffer_seconds=safety_buffer_seconds,
+                        selection_reason="kalshi_demo_paginated_market_discovery",
+                        require_non_empty_orderbook=False,
+                        require_event_metadata=True,
+                    )
+                    rejection = selection.get("selection_gate_rejection_reason")
+                    if rejection:
+                        rejection_counts[str(rejection)] += 1
+                        continue
+                ticker = candidate_metadata.get("ticker") or candidate_metadata.get(
+                    "market_ticker"
+                )
                 if not isinstance(ticker, str) or not ticker:
                     rejection_counts["MISSING_MARKET_METADATA"] += 1
                     continue
@@ -1289,13 +1382,14 @@ def discover_kalshi_demo_ws_market(
                     continue
                 book = orderbook["orderbook_fp"]
                 level_count = len(book["yes_dollars"]) + len(book["no_dollars"])
-                selected_metadata = {**market_metadata, "orderbook_level_count": level_count}
+                selected_metadata = {**candidate_metadata, "orderbook_level_count": level_count}
                 selected = evaluate_market_selection(
                     selected_metadata,
                     selected_at_utc=selected_at_utc,
                     duration_seconds=duration_seconds,
                     safety_buffer_seconds=safety_buffer_seconds,
                     selection_reason="kalshi_demo_paginated_market_discovery",
+                    require_event_metadata=long_horizon,
                 )
                 return {
                     "market_metadata": selected_metadata,
@@ -1330,6 +1424,27 @@ def discover_kalshi_demo_ws_market(
         rejection_counts=rejection_counts,
         cursor_remaining=cursor is not None,
     )
+
+
+def _with_event_metadata(
+    client: KalshiDemoMarketDataClient,
+    market_metadata: Mapping[str, object],
+) -> dict[str, object]:
+    event_ticker = market_metadata.get("event_ticker")
+    if not isinstance(event_ticker, str) or not event_ticker:
+        raise KalshiResponseError("selected market has no event_ticker")
+    event = client.get_event(event_ticker)
+    if not event.get("category") or not event.get("title"):
+        raise KalshiResponseError("event metadata missing category or title")
+    return {
+        **market_metadata,
+        "event_metadata_fetched": True,
+        "event_category": event.get("category"),
+        "event_title": event.get("title"),
+        "event_subtitle": event.get("sub_title") or event.get("subtitle"),
+        "event_type": event.get("event_type"),
+        "series_ticker": event.get("series_ticker"),
+    }
 
 
 def _market_discovery_blocker(
@@ -1436,19 +1551,37 @@ def _default_lifecycle_record(
         "status_at_launch": None,
         "market_status": None,
         "raw_market_status": None,
+        "event_category": None,
+        "event_title": None,
+        "event_subtitle": None,
+        "event_metadata_fetched": False,
+        "category": None,
+        "market_type": None,
         "open_time": None,
         "close_time": None,
         "expected_expiration": None,
         "expected_expiration_time": None,
         "latest_expiration_time": None,
         "occurrence_time": None,
+        "occurrence_datetime": None,
         "settlement_time": None,
+        "settlement_ts": None,
         "listed_expiration": None,
+        "can_close_early": None,
+        "early_close_condition": None,
+        "early_close_deadline": None,
         "selected_at_utc": selected_at_utc.isoformat(),
         "campaign_expected_end_utc": (
             selected_at_utc + timedelta(seconds=duration_seconds)
         ).isoformat(),
+        "campaign_required_end_utc": (
+            selected_at_utc
+            + timedelta(seconds=duration_seconds + DEFAULT_SELECTION_SAFETY_BUFFER_SECONDS)
+        ).isoformat(),
         "time_to_close_at_launch_seconds": None,
+        "time_to_lifecycle_deadline_at_launch_seconds": None,
+        "lifecycle_deadline": None,
+        "selection_safety_buffer_seconds": DEFAULT_SELECTION_SAFETY_BUFFER_SECONDS,
         "selection_reason": "bounded_smoke",
         "selection_gate_result": "not_required",
         "selection_gate_rejection_reason": None,
@@ -1466,15 +1599,12 @@ def _market_lifecycle_record(
     result: str,
     reason: str | None,
 ) -> dict[str, object]:
-    close_time = _first_metadata_time(
-        market_metadata,
-        "close_time",
-        "expected_expiration_time",
-        "latest_expiration_time",
-        "expected_expiration",
-        "expiration_time",
-        "occurrence_time",
-        "listed_expiration",
+    close_time = _parse_time(market_metadata.get("close_time"))
+    lifecycle_deadline = _earliest_metadata_time(
+        market_metadata, *CONSERVATIVE_LIFECYCLE_TIME_FIELDS
+    )
+    campaign_required_end = selected_at_utc + timedelta(
+        seconds=duration_seconds + safety_buffer_seconds
     )
     market_ticker = (
         market_metadata.get("market_ticker")
@@ -1491,6 +1621,12 @@ def _market_lifecycle_record(
         "status_at_launch": status,
         "market_status": status,
         "raw_market_status": market_metadata.get("raw_status") or status,
+        "event_category": market_metadata.get("event_category"),
+        "event_title": market_metadata.get("event_title"),
+        "event_subtitle": market_metadata.get("event_subtitle"),
+        "event_metadata_fetched": _event_metadata_fetched(market_metadata),
+        "category": market_metadata.get("category"),
+        "market_type": market_metadata.get("market_type"),
         "open_time": _time_text(market_metadata.get("open_time")),
         "close_time": _time_text(market_metadata.get("close_time")),
         "expected_expiration": _time_text(market_metadata.get("expected_expiration")),
@@ -1499,15 +1635,29 @@ def _market_lifecycle_record(
         ),
         "latest_expiration_time": _time_text(market_metadata.get("latest_expiration_time")),
         "occurrence_time": _time_text(market_metadata.get("occurrence_time")),
+        "occurrence_datetime": _time_text(market_metadata.get("occurrence_datetime")),
         "settlement_time": _time_text(market_metadata.get("settlement_time")),
+        "settlement_ts": _time_text(market_metadata.get("settlement_ts")),
         "listed_expiration": _time_text(market_metadata.get("listed_expiration")),
+        "can_close_early": market_metadata.get("can_close_early"),
+        "early_close_condition": market_metadata.get("early_close_condition"),
+        "early_close_deadline": _time_text(
+            _first_metadata_value(market_metadata, *EARLY_CLOSE_DEADLINE_FIELDS)
+        ),
         "selected_at_utc": selected_at_utc.isoformat(),
         "campaign_expected_end_utc": (
             selected_at_utc + timedelta(seconds=duration_seconds)
         ).isoformat(),
+        "campaign_required_end_utc": campaign_required_end.isoformat(),
         "time_to_close_at_launch_seconds": (
             int((close_time - selected_at_utc).total_seconds()) if close_time else None
         ),
+        "time_to_lifecycle_deadline_at_launch_seconds": (
+            int((lifecycle_deadline - selected_at_utc).total_seconds())
+            if lifecycle_deadline
+            else None
+        ),
+        "lifecycle_deadline": _time_text(lifecycle_deadline),
         "selection_reason": selection_reason,
         "selection_gate_result": result,
         "selection_gate_rejection_reason": reason,
@@ -1522,6 +1672,56 @@ def _first_metadata_time(market_metadata: Mapping[str, object], *keys: str) -> d
         if parsed is not None:
             return parsed
     return None
+
+
+def _earliest_metadata_time(
+    market_metadata: Mapping[str, object], *keys: str
+) -> datetime | None:
+    parsed = [
+        value
+        for key in keys
+        if (value := _parse_time(market_metadata.get(key))) is not None
+    ]
+    return min(parsed) if parsed else None
+
+
+def _first_metadata_value(market_metadata: Mapping[str, object], *keys: str) -> object:
+    for key in keys:
+        value = market_metadata.get(key)
+        if value is not None and value != "":
+            return value
+    return None
+
+
+def _event_metadata_fetched(market_metadata: Mapping[str, object]) -> bool:
+    if market_metadata.get("event_metadata_fetched") is True:
+        return True
+    return any(
+        market_metadata.get(key) not in (None, "")
+        for key in ("event_category", "event_title", "event_subtitle")
+    )
+
+
+def _as_bool(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    return isinstance(value, str) and value.strip().lower() in {"1", "true", "yes"}
+
+
+def _is_sports_market(market_metadata: Mapping[str, object]) -> bool:
+    categories = (
+        market_metadata.get("event_category"),
+        market_metadata.get("category"),
+    )
+    if any("sport" in str(category).strip().lower() for category in categories if category):
+        return True
+    title = " ".join(
+        str(market_metadata.get(key) or "")
+        for key in ("title", "event_title", "name")
+    ).lower()
+    return any(word in title.split() for word in ("match", "game")) and bool(
+        market_metadata.get("event_category")
+    )
 
 
 def _parse_time(value: object) -> datetime | None:

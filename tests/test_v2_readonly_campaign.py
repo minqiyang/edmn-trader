@@ -92,6 +92,97 @@ def test_market_selection_rejects_short_close_window() -> None:
     assert result["selection_gate_rejection_reason"] == "TIME_TO_CLOSE_TOO_SHORT"
 
 
+def test_market_selection_rejects_early_expected_expiration_even_with_long_close_time() -> None:
+    result = evaluate_market_selection(
+        _market_metadata(
+            close_time="2026-07-20T00:00:00Z",
+            expected_expiration_time="2026-07-08T00:00:00Z",
+            latest_expiration_time="2026-07-30T00:00:00Z",
+        ),
+        selected_at_utc=NOW,
+        duration_seconds=SEVEN_DAY_SECONDS,
+    )
+
+    assert result["selection_gate_rejection_reason"] == "EXPECTED_EXPIRATION_TOO_SHORT"
+    assert result["lifecycle_deadline"] == "2026-07-08T00:00:00+00:00"
+
+
+def test_market_selection_rejects_unsafe_early_close_without_expected_expiration() -> None:
+    result = evaluate_market_selection(
+        _market_metadata(can_close_early=True),
+        selected_at_utc=NOW,
+        duration_seconds=SEVEN_DAY_SECONDS,
+    )
+
+    assert result["selection_gate_rejection_reason"] == "CAN_CLOSE_EARLY_UNSAFE_FOR_DURATION"
+
+
+def test_market_selection_rejects_sports_occurrence_inside_long_horizon() -> None:
+    result = evaluate_market_selection(
+        _market_metadata(
+            close_time="2026-07-20T00:00:00Z",
+            expected_expiration_time="2026-07-20T00:00:00Z",
+            occurrence_datetime="2026-07-08T00:00:00Z",
+            event_category="Sports",
+            event_metadata_fetched=True,
+        ),
+        selected_at_utc=NOW,
+        duration_seconds=SEVEN_DAY_SECONDS,
+    )
+
+    assert result["selection_gate_rejection_reason"] == "EVENT_OCCURRENCE_TOO_EARLY"
+
+
+def test_market_selection_accepts_all_conservative_deadlines_beyond_required_end() -> None:
+    result = evaluate_market_selection(
+        _market_metadata(
+            close_time="2026-07-20T00:00:00Z",
+            expected_expiration_time="2026-07-19T00:00:00Z",
+            occurrence_datetime="2026-07-18T00:00:00Z",
+            latest_expiration_time="2026-07-30T00:00:00Z",
+            can_close_early=True,
+            event_category="Finance",
+            event_metadata_fetched=True,
+        ),
+        selected_at_utc=NOW,
+        duration_seconds=SEVEN_DAY_SECONDS,
+    )
+
+    assert result["selection_gate_result"] == "pass"
+    assert result["lifecycle_deadline"] == "2026-07-18T00:00:00+00:00"
+
+
+def test_short_smoke_accepts_sufficiently_long_short_lived_market() -> None:
+    result = evaluate_market_selection(
+        _market_metadata(close_time="2026-07-03T20:00:00Z"),
+        selected_at_utc=NOW,
+        duration_seconds=300,
+        safety_buffer_seconds=SMOKE_SELECTION_SAFETY_BUFFER_SECONDS,
+    )
+
+    assert result["selection_gate_result"] == "pass"
+
+
+def test_thirty_minute_canary_uses_its_own_duration_gate() -> None:
+    metadata = _market_metadata(close_time="2026-07-03T18:40:00Z")
+
+    smoke = evaluate_market_selection(
+        metadata,
+        selected_at_utc=NOW,
+        duration_seconds=300,
+        safety_buffer_seconds=SMOKE_SELECTION_SAFETY_BUFFER_SECONDS,
+    )
+    canary = evaluate_market_selection(
+        metadata,
+        selected_at_utc=NOW,
+        duration_seconds=1_800,
+        safety_buffer_seconds=SMOKE_SELECTION_SAFETY_BUFFER_SECONDS,
+    )
+
+    assert smoke["selection_gate_result"] == "pass"
+    assert canary["selection_gate_rejection_reason"] == "TIME_TO_CLOSE_TOO_SHORT"
+
+
 def test_market_selection_rejects_missing_close_time_and_empty_orderbook() -> None:
     missing_close = _market_metadata()
     del missing_close["close_time"]
@@ -204,6 +295,76 @@ def test_market_discovery_paginates_and_selects_active_market() -> None:
     assert [request.url.params.get("cursor") for request in market_requests] == [None, "page-2"]
     assert all(request.method == "GET" for request in requests)
     assert all(request.url.host == "external-api.demo.kalshi.co" for request in requests)
+
+
+def test_market_discovery_fetches_event_metadata_for_seven_day_selection() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path.endswith("/markets"):
+            return httpx.Response(
+                200,
+                json={
+                    "markets": [
+                        _market_metadata(
+                            close_time="2026-07-20T00:00:00Z",
+                            expected_expiration_time="2026-07-19T00:00:00Z",
+                            occurrence_datetime="2026-07-18T00:00:00Z",
+                        )
+                    ],
+                    "cursor": "",
+                },
+            )
+        if request.url.path.endswith("/events/DEMO-EVENT"):
+            return httpx.Response(
+                200,
+                json={
+                    "event": {
+                        "event_ticker": "DEMO-EVENT",
+                        "category": "Finance",
+                        "title": "Long-horizon event",
+                    }
+                },
+            )
+        return httpx.Response(
+            200,
+            json={"orderbook_fp": {"yes_dollars": [["0.4000", "2.00"]], "no_dollars": []}},
+        )
+
+    result = discover_kalshi_demo_ws_market(
+        duration_seconds=SEVEN_DAY_SECONDS,
+        safety_buffer_seconds=86_400,
+        selected_at_utc=NOW,
+        client=_market_discovery_client(handler),
+    )
+
+    assert result["blocker_code"] is None
+    assert result["market_metadata"]["event_metadata_fetched"] is True
+    assert result["market_metadata"]["event_category"] == "Finance"
+    assert any(request.url.path.endswith("/events/DEMO-EVENT") for request in requests)
+
+
+def test_market_discovery_rejects_incomplete_event_metadata() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/markets"):
+            return httpx.Response(
+                200,
+                json={"markets": [_market_metadata()], "cursor": ""},
+            )
+        if request.url.path.endswith("/events/DEMO-EVENT"):
+            return httpx.Response(200, json={"event": {"event_ticker": "DEMO-EVENT"}})
+        return httpx.Response(500)
+
+    result = discover_kalshi_demo_ws_market(
+        duration_seconds=SEVEN_DAY_SECONDS,
+        safety_buffer_seconds=86_400,
+        selected_at_utc=NOW,
+        client=_market_discovery_client(handler),
+    )
+
+    assert result["blocker_code"] == "DEMO_NO_ELIGIBLE_MARKET"
+    assert result["rejection_counts"] == {"EVENT_METADATA_MISSING": 1}
 
 
 def test_market_discovery_rejects_finalized_and_empty_results_explicitly() -> None:
@@ -493,7 +654,10 @@ def test_validator_does_not_mark_running_seven_day_campaign_complete(tmp_path: P
         duration_seconds=604800,
         max_markets=3,
         now=datetime(2026, 7, 3, 18, 0, tzinfo=UTC),
-        market_metadata=_market_metadata(),
+        market_metadata=_market_metadata(
+            event_category="Finance",
+            event_metadata_fetched=True,
+        ),
     )
     summary = json.loads((tmp_path / "campaign_summary.json").read_text(encoding="utf-8"))
     summary.update(
@@ -570,6 +734,83 @@ def test_validator_blocks_finalized_market_as_campaign_evidence(tmp_path: Path) 
     )
     assert result["data_integrity_classification"] == "DATA_INTEGRITY_PASS"
     assert result["campaign_evidence_valid"] is False
+    assert (
+        result["evidence_validity_classification"]
+        == "CAMPAIGN_EVIDENCE_INVALID_MARKET_LIFECYCLE"
+    )
+
+
+def test_validator_separates_lifecycle_rejection_from_data_integrity(tmp_path: Path) -> None:
+    plan_kalshi_ws_campaign(
+        output_dir=tmp_path,
+        campaign_id="lifecycle-rejected",
+        duration_seconds=SEVEN_DAY_SECONDS,
+        max_markets=1,
+        now=NOW,
+        market_metadata=_market_metadata(
+            close_time="2026-07-05T00:00:00Z",
+            event_category="Finance",
+            event_metadata_fetched=True,
+        ),
+    )
+    _write_ok_heartbeat(tmp_path)
+
+    result = validate_campaign(input_dir=tmp_path)
+
+    assert result["status"] == "pass"
+    assert result["data_integrity_classification"] == "DATA_INTEGRITY_PASS"
+    assert result["campaign_evidence_valid"] is False
+    assert (
+        result["evidence_validity_classification"]
+        == "CAMPAIGN_EVIDENCE_INVALID_MARKET_LIFECYCLE"
+    )
+
+
+def test_manifest_preserves_lifecycle_v2_fields(tmp_path: Path) -> None:
+    plan_kalshi_ws_campaign(
+        output_dir=tmp_path,
+        campaign_id="manifest-v2",
+        duration_seconds=SEVEN_DAY_SECONDS,
+        max_markets=1,
+        now=NOW,
+        market_metadata=_market_metadata(
+            close_time="2026-07-20T00:00:00Z",
+            expected_expiration_time="2026-07-19T00:00:00Z",
+            occurrence_datetime="2026-07-18T00:00:00Z",
+            can_close_early=True,
+            early_close_condition="after outcome",
+            event_category="Finance",
+            event_metadata_fetched=True,
+        ),
+    )
+
+    manifest = json.loads((tmp_path / "campaign_manifest.json").read_text(encoding="utf-8"))
+
+    assert manifest["can_close_early"] is True
+    assert manifest["expected_expiration_time"] == "2026-07-19T00:00:00+00:00"
+    assert manifest["occurrence_datetime"] == "2026-07-18T00:00:00+00:00"
+    assert manifest["lifecycle_deadline"] == "2026-07-18T00:00:00+00:00"
+    assert manifest["selection_gate_rejection_reason"] is None
+
+
+def test_lifecycle_gate_keeps_execution_safety_disabled(tmp_path: Path) -> None:
+    summary = plan_kalshi_ws_campaign(
+        output_dir=tmp_path,
+        campaign_id="safety-v2",
+        duration_seconds=SEVEN_DAY_SECONDS,
+        max_markets=1,
+        now=NOW,
+        market_metadata=_market_metadata(
+            close_time="2026-07-20T00:00:00Z",
+            expected_expiration_time="2026-07-19T00:00:00Z",
+            event_category="Finance",
+            event_metadata_fetched=True,
+        ),
+    )
+
+    assert summary["live_gate_status"] == "disabled"
+    assert summary["production_endpoint_used"] is False
+    assert summary["submit_attempts"] == 0
 
 
 def test_ws_campaign_plan_requires_market_metadata(tmp_path: Path) -> None:

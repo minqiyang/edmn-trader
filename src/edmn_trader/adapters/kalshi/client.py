@@ -106,6 +106,20 @@ class KalshiDemoMarketDataClient:
         _validate_markets_payload(payload)
         return payload
 
+    def get_market(self, ticker: str) -> dict[str, Any]:
+        """Return one public Kalshi Demo market record."""
+
+        clean_ticker = _validate_ticker(ticker)
+        payload = self._get_json(f"/markets/{quote(clean_ticker, safe='')}", params={})
+        return _object_payload(payload, key="market", resource="market")
+
+    def get_event(self, event_ticker: str) -> dict[str, Any]:
+        """Return one public Kalshi Demo event record."""
+
+        clean_ticker = _validate_ticker(event_ticker)
+        payload = self._get_json(f"/events/{quote(clean_ticker, safe='')}", params={})
+        return _object_payload(payload, key="event", resource="event")
+
     def get_market_orderbook(self, ticker: str, *, depth: int | None = None) -> dict[str, Any]:
         """Return the raw fixed-point orderbook for one Kalshi Demo market."""
 
@@ -207,11 +221,18 @@ def _validate_markets_payload(payload: dict[str, Any]) -> None:
     if not isinstance(markets, list):
         msg = "Kalshi markets response must contain a markets list"
         raise KalshiResponseError(msg)
-
     cursor = payload.get("cursor")
     if cursor is not None and not isinstance(cursor, str):
         msg = "Kalshi markets response cursor must be a string when present"
         raise KalshiResponseError(msg)
+
+
+def _object_payload(payload: dict[str, Any], *, key: str, resource: str) -> dict[str, Any]:
+    value = payload.get(key)
+    if not isinstance(value, dict):
+        msg = f"Kalshi {resource} response must contain a {key} object"
+        raise KalshiResponseError(msg)
+    return value
 
 
 def _validate_orderbook_payload(payload: dict[str, Any], *, ticker: str) -> None:

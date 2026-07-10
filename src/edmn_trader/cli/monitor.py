@@ -589,6 +589,13 @@ def _campaign_status(
         or campaign.get("market_lifecycle_status")
         or ("CLOSED_OR_FINALIZED" if market_closed else "UNKNOWN"),
         "market_evidence_valid": validation.get("campaign_evidence_valid", not market_closed),
+        "evidence_validity_classification": validation.get(
+            "evidence_validity_classification"
+        ),
+        "lifecycle_deadline": campaign.get("lifecycle_deadline"),
+        "campaign_required_end_utc": campaign.get("campaign_required_end_utc"),
+        "can_close_early": campaign.get("can_close_early"),
+        "event_category": campaign.get("event_category"),
         "market_warning": "MARKET_CLOSED_OR_FINALIZED" if market_closed else None,
         "selection_gate_result": campaign.get("selection_gate_result"),
         "selection_gate_rejection_reason": campaign.get("selection_gate_rejection_reason"),
@@ -644,6 +651,11 @@ def _campaign_monitor_status(
         return None
     if _is_closed_market_status(campaign.get("market_status") or campaign.get("status_at_launch")):
         return "MARKET_CLOSED_OR_FINALIZED"
+    if (
+        validation.get("evidence_validity_classification")
+        == "CAMPAIGN_EVIDENCE_INVALID_MARKET_LIFECYCLE"
+    ):
+        return "MARKET_LIFECYCLE_INVALID"
     source_type = campaign.get("source_type") or validation.get("source_type")
     validation_status = validation.get("status") or campaign.get("validation_status")
     classification = validation.get("evidence_classification") or campaign.get(

@@ -53,6 +53,42 @@ def test_list_markets_uses_read_only_get_markets_endpoint() -> None:
     assert "authorization" not in requests[0].headers
 
 
+def test_get_market_uses_read_only_market_endpoint() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json={"market": {"ticker": "DEMO-EVENT-MARKET"}})
+
+    client = KalshiDemoMarketDataClient(
+        http_client=httpx.Client(transport=httpx.MockTransport(handler))
+    )
+    response = client.get_market("DEMO-EVENT-MARKET")
+
+    assert response["ticker"] == "DEMO-EVENT-MARKET"
+    assert requests[0].method == "GET"
+    assert requests[0].url.path == "/trade-api/v2/markets/DEMO-EVENT-MARKET"
+    assert "authorization" not in requests[0].headers
+
+
+def test_get_event_uses_read_only_event_endpoint() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json={"event": {"event_ticker": "DEMO-EVENT"}})
+
+    client = KalshiDemoMarketDataClient(
+        http_client=httpx.Client(transport=httpx.MockTransport(handler))
+    )
+    response = client.get_event("DEMO-EVENT")
+
+    assert response["event_ticker"] == "DEMO-EVENT"
+    assert requests[0].method == "GET"
+    assert requests[0].url.path == "/trade-api/v2/events/DEMO-EVENT"
+    assert "authorization" not in requests[0].headers
+
+
 def test_get_market_orderbook_uses_read_only_orderbook_endpoint() -> None:
     requests: list[httpx.Request] = []
     payload = _load_fixture("kalshi_orderbook_response.json")

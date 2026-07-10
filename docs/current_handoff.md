@@ -1531,3 +1531,19 @@ retention deletion, or any order path.
 ## Last updated timestamp
 
 2026-07-10 12:26:38 -07:00
+
+## Round 8G lifecycle gate v2 checkpoint
+
+Round 8G confirmed that the VPS Demo market
+`KXWTACHALLENGERMATCH-26JUL10STEMAR-MAR` finalized with result `yes` after an
+early-close sports match, before the planned seven-day evidence end. The
+campaign and watcher were deliberately finalized with their private
+root-specific supervisors; raw data remains under the private-data root and
+was not copied into the public repository.
+
+Public follow-up is on branch `codex/round8g-lifecycle-gate-v2-impl` from the
+clean current-main checkout. The gate now uses conservative lifecycle
+deadlines, fetches event metadata for seven-day discovery, rejects unsafe
+early-close and sports/match candidates by default, preserves lifecycle fields
+in manifests, and separates data integrity from market-lifecycle evidence
+validity. Validation remains Demo/read-only with the public live gate disabled.
