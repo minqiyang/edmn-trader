@@ -106,6 +106,13 @@ class KalshiPublicTradeEvidence:
             raise ValueError("public trade identity fields are invalid")
         copied = deepcopy(dict(self.native_trade_payload))
         validate_no_secret_payload(copied)
+        if _ACCOUNT_ONLY_FIELDS.intersection(key.lower() for key in copied):
+            raise ValueError("public trade payload contains account-only fields")
+        if (
+            copied.get("trade_id") != self.native_trade_id
+            or copied.get("market_ticker") != self.market_ticker
+        ):
+            raise ValueError("public trade payload identity does not match evidence")
         object.__setattr__(self, "native_trade_payload", copied)
 
     def to_record(self) -> dict[str, object]:
@@ -139,6 +146,29 @@ class PublicTradeEvidenceStream:
     quarantined_count: int
     status: PublicTradeStreamStatus
 
+    def __post_init__(self) -> None:
+        selected = tuple(self.selected_market_tickers)
+        trades = tuple(self.trades)
+        if not selected or len(set(selected)) != len(selected):
+            raise ValueError("selected market tickers must be unique and non-empty")
+        if any(count < 0 for count in self._counts()):
+            raise ValueError("public trade stream counts must be non-negative")
+        if any(trade.market_ticker not in selected for trade in trades):
+            raise ValueError("public trade stream contains a nonselected market")
+        expected_status = _public_trade_stream_status(trades, self.quarantined_count)
+        if PublicTradeStreamStatus(self.status) is not expected_status:
+            raise ValueError("public trade stream status contradicts its contents")
+        object.__setattr__(self, "selected_market_tickers", selected)
+        object.__setattr__(self, "trades", trades)
+        object.__setattr__(self, "status", expected_status)
+
+    def _counts(self) -> tuple[int, int, int]:
+        return (
+            self.filtered_nonselected_count,
+            self.ignored_nontrade_count,
+            self.quarantined_count,
+        )
+
     @property
     def trade_count(self) -> int:
         return len(self.trades)
@@ -158,9 +188,41 @@ class KalshiRestLifecycleEvidence:
     validity: LifecycleValidity
     observation_age_seconds: int
     max_age_seconds: int
+    mve_unsupported: bool
     source: LifecycleSource = field(default=LifecycleSource.REST_FALLBACK, init=False)
     proves_websocket_transport: bool = field(default=False, init=False)
     schema_version: str = field(default=LIFECYCLE_SCHEMA_VERSION, init=False)
+
+    def __post_init__(self) -> None:
+        _require_aware(self.observed_at_utc, "observed_at_utc")
+        _require_aware(self.evaluated_at_utc, "evaluated_at_utc")
+        if not self.market_ticker or self.max_age_seconds < 0:
+            raise ValueError("lifecycle market and maximum age are invalid")
+        expected_age = _age_seconds(
+            self.evaluated_at_utc,
+            self.observed_at_utc,
+            "observed_at_utc",
+        )
+        if self.observation_age_seconds != expected_age:
+            raise ValueError("lifecycle observation age contradicts its timestamps")
+        status = LifecycleStatus(self.lifecycle_status)
+        normalized_from_raw = normalize_kalshi_market_metadata(
+            {"status": self.raw_status}
+        ).get("status")
+        if normalized_from_raw != self.normalized_status:
+            raise ValueError("lifecycle raw and normalized status contradict")
+        if _lifecycle_status(self.normalized_status) is not status:
+            raise ValueError("lifecycle status contradicts normalized status")
+        expected_validity = _lifecycle_validity(
+            status,
+            expected_age,
+            self.max_age_seconds,
+            self.mve_unsupported,
+        )
+        if LifecycleValidity(self.validity) is not expected_validity:
+            raise ValueError("lifecycle validity contradicts status or age")
+        object.__setattr__(self, "lifecycle_status", status)
+        object.__setattr__(self, "validity", expected_validity)
 
     def to_record(self) -> dict[str, object]:
         return {
@@ -175,6 +237,7 @@ class KalshiRestLifecycleEvidence:
             "validity": self.validity,
             "observation_age_seconds": self.observation_age_seconds,
             "max_age_seconds": self.max_age_seconds,
+            "mve_unsupported": self.mve_unsupported,
             "source": self.source,
             "proves_websocket_transport": self.proves_websocket_transport,
         }
@@ -329,13 +392,7 @@ def build_public_trade_stream(
         filtered_nonselected_count=filtered,
         ignored_nontrade_count=ignored,
         quarantined_count=quarantined,
-        status=(
-            PublicTradeStreamStatus.QUARANTINED_INPUT
-            if quarantined
-            else PublicTradeStreamStatus.OBSERVED
-            if trades
-            else PublicTradeStreamStatus.QUIET_NO_PUBLIC_TRADES
-        ),
+        status=_public_trade_stream_status(tuple(trades), quarantined),
     )
 
 
@@ -362,14 +419,8 @@ def record_rest_lifecycle(
     normalized = normalize_kalshi_market_metadata({"status": raw_status_value})
     normalized_status = normalized.get("status")
     status = _lifecycle_status(normalized_status)
-    if _is_mve(market_metadata):
-        validity = LifecycleValidity.MVE_UNSUPPORTED
-    elif age > max_age_seconds:
-        validity = LifecycleValidity.STALE
-    elif status is LifecycleStatus.UNKNOWN:
-        validity = LifecycleValidity.UNKNOWN_STATUS
-    else:
-        validity = LifecycleValidity.VALID
+    mve_unsupported = _is_mve(market_metadata)
+    validity = _lifecycle_validity(status, age, max_age_seconds, mve_unsupported)
     return KalshiRestLifecycleEvidence(
         market_ticker=selected_market_ticker,
         observed_at_utc=observed_at_utc,
@@ -382,6 +433,7 @@ def record_rest_lifecycle(
         validity=validity,
         observation_age_seconds=age,
         max_age_seconds=max_age_seconds,
+        mve_unsupported=mve_unsupported,
     )
 
 
@@ -446,6 +498,32 @@ def _lifecycle_status(value: object) -> LifecycleStatus:
         "paused": LifecycleStatus.PAUSED,
         "unopened": LifecycleStatus.UNOPENED,
     }.get(value, LifecycleStatus.UNKNOWN)
+
+
+def _lifecycle_validity(
+    status: LifecycleStatus,
+    age_seconds: int,
+    max_age_seconds: int,
+    mve_unsupported: bool,
+) -> LifecycleValidity:
+    if mve_unsupported:
+        return LifecycleValidity.MVE_UNSUPPORTED
+    if age_seconds > max_age_seconds:
+        return LifecycleValidity.STALE
+    if status is LifecycleStatus.UNKNOWN:
+        return LifecycleValidity.UNKNOWN_STATUS
+    return LifecycleValidity.VALID
+
+
+def _public_trade_stream_status(
+    trades: tuple[KalshiPublicTradeEvidence, ...],
+    quarantined_count: int,
+) -> PublicTradeStreamStatus:
+    if quarantined_count:
+        return PublicTradeStreamStatus.QUARANTINED_INPUT
+    if trades:
+        return PublicTradeStreamStatus.OBSERVED
+    return PublicTradeStreamStatus.QUIET_NO_PUBLIC_TRADES
 
 
 def _is_mve(market_metadata: Mapping[str, object]) -> bool:

@@ -337,10 +337,11 @@ def test_connection_evidence_event_types(event_type: ConnectionEvidenceType) -> 
 
 
 def test_hard_evidence_flags_cannot_be_overridden() -> None:
-    trade = build_public_trade_stream(
+    stream = build_public_trade_stream(
         [_trade_event()],
         selected_market_tickers=(MARKET,),
-    ).trades[0]
+    )
+    trade = stream.trades[0]
     lifecycle = record_rest_lifecycle(
         {"ticker": MARKET, "status": "active"},
         selected_market_ticker=MARKET,
@@ -353,6 +354,20 @@ def test_hard_evidence_flags_cannot_be_overridden() -> None:
         replace(trade, is_account_fill=True)
     with pytest.raises(ValueError, match="init=False"):
         replace(lifecycle, proves_websocket_transport=True)
+    with pytest.raises(ValueError, match="account-only"):
+        replace(
+            trade,
+            native_trade_payload={
+                **trade.native_trade_payload,
+                "order_id": "order-1",
+            },
+        )
+    with pytest.raises(ValueError, match="stream status"):
+        replace(stream, status=PublicTradeStreamStatus.QUIET_NO_PUBLIC_TRADES)
+    with pytest.raises(ValueError, match="lifecycle status"):
+        replace(lifecycle, lifecycle_status=LifecycleStatus.UNKNOWN)
+    with pytest.raises(ValueError, match="raw and normalized"):
+        replace(lifecycle, raw_status="closed")
 
 
 def test_keepalive_record_rejects_inconsistent_direct_mutation() -> None:
