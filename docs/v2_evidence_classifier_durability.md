@@ -123,7 +123,9 @@ recovery. The merge gates are:
 
 The aggregate benchmark result derives its pass state from these gates and
 requires at least 100,000 events with checkpoints no less frequent than every
-1,000 records; callers cannot supply or override a pass label.
+1,000 records. The recorded checkpoint count must include the genesis,
+expected periodic, and final checkpoints; callers cannot supply or override a
+pass label.
 
 The 1,000,000-event benchmark remains pending and is mandatory before any
 30-day collection decision.

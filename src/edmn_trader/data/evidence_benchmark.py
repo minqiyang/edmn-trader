@@ -76,6 +76,8 @@ class EvidenceBenchmarkResult:
             self.event_count >= MIN_BENCHMARK_EVENT_COUNT
             and self.checkpoint_every_records
             <= MAX_BENCHMARK_CHECKPOINT_INTERVAL
+            and self.checkpoint_count
+            >= self.event_count // self.checkpoint_every_records + 2
             and self.elapsed_seconds <= MAX_ELAPSED_SECONDS
             and self.peak_rss_mib <= MAX_PEAK_RSS_MIB
             and self.peak_rss_mib * 1024 * 1024 <= self.memory_profile_bytes

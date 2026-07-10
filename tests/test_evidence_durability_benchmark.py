@@ -100,3 +100,21 @@ def test_benchmark_pass_requires_the_mandatory_workload(
     )
 
     assert result.passed is False
+
+
+def test_benchmark_pass_requires_expected_periodic_checkpoint_count() -> None:
+    result = EvidenceBenchmarkResult(
+        event_count=100_000,
+        memory_profile_bytes=1024 * 1024 * 1024,
+        checkpoint_every_records=1_000,
+        elapsed_seconds=1,
+        peak_rss_mib=1,
+        checkpoint_count=101,
+        checkpoint_p95_seconds=0.001,
+        no_oom=True,
+        no_full_file_callback_work=True,
+        valid_hashes=True,
+        crash_recovery_valid=True,
+    )
+
+    assert result.passed is False
