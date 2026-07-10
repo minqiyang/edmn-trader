@@ -1373,3 +1373,20 @@ A concise way to explain the current project:
 > without creating any executable order path. I then added a fake-adapter Stage
 > 5 execution boundary that proves execution attempts are risk-gated, logged,
 > and blocked when unsafe before any real adapter is introduced.
+
+## Round 8G lifecycle verification and gate v2
+
+The selected Demo market was independently verified through the read-only REST
+market and event endpoints after the recorder stopped receiving valid ongoing
+evidence. REST reported a finalized sports match with a populated result,
+expected expiration and occurrence before the planned seven-day end, and an
+early-close condition. The run's JSONL integrity remained clean, but the market
+lifecycle made the campaign evidence invalid; the campaign and watcher were
+terminated with their root-specific supervisors using bounded TERM handling.
+
+The public lifecycle gate now treats `close_time` as insufficient when earlier
+expected-expiration, occurrence, or early-close metadata exists. It fetches
+event metadata for long-horizon discovery, rejects unsafe early-close and
+sports/match markets by default, records the conservative deadline in the
+manifest, and separates data-integrity status from market-lifecycle evidence
+validity. The public live gate remains disabled.

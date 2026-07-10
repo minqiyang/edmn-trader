@@ -68,6 +68,8 @@ context, then read only the files needed for the requested stage. Use `rg` and
   recovery, retention-metadata, and synthetic benchmark contract.
 - `docs/d2d_100k_benchmark.md`: redacted synthetic 100k performance results,
   memory/checkpoint gates, provenance limitation, and 1M deferral.
+- `docs/v2_lifecycle_gate_v2.md`: conservative long-horizon lifecycle deadline
+  policy, event metadata requirements, and evidence-validity boundary.
 - `docs/v2_monitor_contract.md`: V2 monitor lifecycle, liveness, and stale
   semantics contract.
 - `docs/stage8_polymarket_readiness.md`: Stage 8 compliance/readiness note.

@@ -35,6 +35,12 @@ numbers while the repository is still in early research scaffolding.
   auth-header or deeply nested secret-like keys are rejected. This adds no
   subscriptions, rebuild, campaign, or order behavior; public live trading
   remains disabled.
+- Added lifecycle gate v2 for long-horizon read-only campaigns: conservative
+  deadline selection uses expected expiration, occurrence, and early-close
+  metadata; event metadata is fetched for seven-day discovery; sports/match and
+  unsafe early-close markets are rejected; manifests preserve lifecycle fields;
+  and validation separates data integrity from invalid market-lifecycle
+  evidence. The live gate remains disabled.
 - Corrected Kalshi Demo market discovery for bounded read-only WebSocket runs:
   paginate `status=open` results, normalize REST lifecycle statuses, preserve
   raw status metadata, separate discovery HTTP/parse failures from empty or

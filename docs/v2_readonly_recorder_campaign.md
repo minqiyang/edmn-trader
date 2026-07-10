@@ -34,3 +34,19 @@ in campaign metadata. Discovery failures are distinct:
 
 Bounded five-minute smoke selection uses a 900-second safety buffer. It does not
 reuse or weaken the seven-day duration plus 24-hour safety requirement.
+
+## Lifecycle gate v2
+
+The seven-day gate now uses the earliest conservative lifecycle deadline from
+`close_time`, `expected_expiration_time`, `occurrence_datetime`, and any
+explicit early-close deadline. It requires that deadline to exceed
+`campaign_required_end`, which is the selected time plus campaign duration and
+the safety buffer. `latest_expiration_time` is metadata only and cannot
+override an earlier expected expiration or occurrence.
+
+`can_close_early=true` requires expected-expiration or explicit early-close
+deadline metadata. Long-horizon selection also fetches event metadata, rejects
+sports/match markets by default, and preserves lifecycle fields and structured
+rejection reasons in the manifest. Validation reports data integrity separately
+from invalid market-lifecycle evidence. The bounded smoke/canary profiles stay
+separate and do not count as seven-day evidence.
