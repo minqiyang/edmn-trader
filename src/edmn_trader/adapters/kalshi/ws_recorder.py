@@ -17,6 +17,7 @@ from edmn_trader.adapters.kalshi.ws_auth import (
     KalshiWsAuthConfig,
     build_kalshi_ws_headers,
 )
+from edmn_trader.adapters.kalshi.ws_events import KalshiWsIntegrityTracker
 from edmn_trader.data.jsonl import append_jsonl_record, write_jsonl_records
 
 WebSocketFactory = Callable[..., Any]
@@ -91,13 +92,19 @@ def record_kalshi_demo_ws_orderbook(
     rows: list[dict[str, object]] = []
     subscription_acknowledged = False
     reconnect_count = 0
+    integrity_tracker = KalshiWsIntegrityTracker(
+        campaign_id=config.campaign_id,
+        requested_market_tickers=config.market_tickers,
+    )
     deadline = time.monotonic() + config.duration_seconds
     write_jsonl_records(config.raw_events_path, [])
     while len(rows) < config.max_events and time.monotonic() < deadline:
         try:
             headers = build_kalshi_ws_headers(auth, timestamp_ms=int(clock().timestamp() * 1000))
             with factory(config.url, additional_headers=headers, open_timeout=10) as websocket:
+                integrity_tracker.start_connection()
                 websocket.send(_subscription_payload(config.market_tickers))
+                integrity_tracker.bind_subscription(command_id=1)
                 while len(rows) < config.max_events and time.monotonic() < deadline:
                     try:
                         raw = websocket.recv(
@@ -106,22 +113,19 @@ def record_kalshi_demo_ws_orderbook(
                     except TimeoutError:
                         continue
                     received_at = clock()
+                    received_monotonic_ns = time.monotonic_ns()
                     payload = _loads(raw)
                     message_type = _message_type(payload)
                     subscription_acknowledged = subscription_acknowledged or _is_subscription_ack(
                         payload,
                         message_type,
                     )
-                    row = {
-                        "record_type": "kalshi_demo_ws_message",
-                        "campaign_id": config.campaign_id,
-                        "venue": "kalshi_demo",
-                        "market_tickers": list(config.market_tickers),
-                        "sequence": len(rows) + 1,
-                        "received_at": received_at.isoformat(),
-                        "message_type": message_type,
-                        "payload": payload,
-                    }
+                    row = integrity_tracker.record(
+                        payload,
+                        local_row_index=len(rows) + 1,
+                        received_at_utc=received_at,
+                        received_monotonic_ns=received_monotonic_ns,
+                    ).to_record()
                     rows.append(row)
                     append_jsonl_record(config.raw_events_path, row)
                     if progress_callback is not None:
@@ -222,11 +226,11 @@ def _write_result(
         write_jsonl_records(config.raw_events_path, rows)
     sha = _sha256(config.raw_events_path) if rows else None
     counts = [
-        _message_type(row["payload"])
+        _message_type(payload)
         for row in rows
-        if isinstance(row.get("payload"), Mapping)
+        if (payload := _row_payload(row)) is not None
     ]
-    last_event = str(rows[-1]["received_at"]) if rows else None
+    last_event = _row_received_at(rows[-1]) if rows else None
     return KalshiWsRecorderResult(
         status="blocked" if blocker_code else "ok",
         blocker_code=blocker_code,
@@ -280,9 +284,9 @@ def _progress(
     reconnect_count: int = 0,
 ) -> dict[str, object]:
     counts = [
-        _message_type(row["payload"])
+        _message_type(payload)
         for row in rows
-        if isinstance(row.get("payload"), Mapping)
+        if (payload := _row_payload(row)) is not None
     ]
     return {
         "connection_established": True,
@@ -295,7 +299,7 @@ def _progress(
         "heartbeat_count": sum("heartbeat" in item for item in counts),
         "error_count": sum("error" in item for item in counts),
         "reconnect_count": reconnect_count,
-        "last_event_time": str(rows[-1]["received_at"]) if rows else None,
+        "last_event_time": _row_received_at(rows[-1]) if rows else None,
         "source_type": "WEBSOCKET_DELTA"
         if any("orderbook_delta" in item for item in counts)
         else "WEBSOCKET_SNAPSHOT",
@@ -310,3 +314,13 @@ def _sha256(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _row_payload(row: Mapping[str, object]) -> Mapping[str, object] | None:
+    payload = row.get("original_payload", row.get("payload"))
+    return payload if isinstance(payload, Mapping) else None
+
+
+def _row_received_at(row: Mapping[str, object]) -> str | None:
+    value = row.get("received_at_utc", row.get("received_at"))
+    return str(value) if value is not None else None

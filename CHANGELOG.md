@@ -6,6 +6,12 @@ numbers while the repository is still in early research scaffolding.
 
 ## Unreleased
 
+- Added D2A Kalshi WebSocket raw evidence schema v2 with preserved native
+  SID/sequence/timestamps and payloads, separate local append order, explicit
+  connection and integrity segments, conservative sequence states,
+  snapshot-before-delta admission, deterministic parsed-payload hashes, and a
+  typed legacy path. This adds no subscriptions, rebuild, campaign, or order
+  behavior; public live trading remains disabled.
 - Corrected Kalshi Demo market discovery for bounded read-only WebSocket runs:
   paginate `status=open` results, normalize REST lifecycle statuses, preserve
   raw status metadata, separate discovery HTTP/parse failures from empty or
