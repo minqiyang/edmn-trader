@@ -721,14 +721,6 @@ def validate_campaign(*, input_dir: Path) -> dict[str, object]:
             failures.append("recorder smoke must contain rebuild_frames.jsonl")
         if not daily_validation:
             failures.append("recorder smoke must contain daily_validation.jsonl")
-    if (
-        summary.get("mode") == "read_only_websocket_campaign"
-        and summary.get("selection_gate_result") != "pass"
-    ):
-        failures.append(
-            "market selection gate rejected: "
-            f"{summary.get('selection_gate_rejection_reason') or 'MARKET_STATUS_UNKNOWN'}"
-        )
     if _secret_like_files(input_dir):
         failures.append("secret-like field found in campaign artifacts")
     evidence_classification = _classify_campaign(
@@ -737,7 +729,10 @@ def validate_campaign(*, input_dir: Path) -> dict[str, object]:
         recorder_events=recorder_events,
         rebuild_frames=rebuild_frames,
     )
-    market_evidence_valid = not _market_closed_or_finalized(summary)
+    market_evidence_valid = not _market_closed_or_finalized(summary) and not (
+        summary.get("mode") == "read_only_websocket_campaign"
+        and summary.get("selection_gate_result") != "pass"
+    )
     evidence_validity_classification = (
         "CAMPAIGN_EVIDENCE_VALID"
         if market_evidence_valid
@@ -1439,6 +1434,8 @@ def _with_event_metadata(
     if not isinstance(event_ticker, str) or not event_ticker:
         raise KalshiResponseError("selected market has no event_ticker")
     event = client.get_event(event_ticker)
+    if not event.get("category") or not event.get("title"):
+        raise KalshiResponseError("event metadata missing category or title")
     return {
         **market_metadata,
         "event_metadata_fetched": True,

@@ -345,6 +345,28 @@ def test_market_discovery_fetches_event_metadata_for_seven_day_selection() -> No
     assert any(request.url.path.endswith("/events/DEMO-EVENT") for request in requests)
 
 
+def test_market_discovery_rejects_incomplete_event_metadata() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/markets"):
+            return httpx.Response(
+                200,
+                json={"markets": [_market_metadata()], "cursor": ""},
+            )
+        if request.url.path.endswith("/events/DEMO-EVENT"):
+            return httpx.Response(200, json={"event": {"event_ticker": "DEMO-EVENT"}})
+        return httpx.Response(500)
+
+    result = discover_kalshi_demo_ws_market(
+        duration_seconds=SEVEN_DAY_SECONDS,
+        safety_buffer_seconds=86_400,
+        selected_at_utc=NOW,
+        client=_market_discovery_client(handler),
+    )
+
+    assert result["blocker_code"] == "DEMO_NO_ELIGIBLE_MARKET"
+    assert result["rejection_counts"] == {"EVENT_METADATA_MISSING": 1}
+
+
 def test_market_discovery_rejects_finalized_and_empty_results_explicitly() -> None:
     finalized = discover_kalshi_demo_ws_market(
         duration_seconds=300,
@@ -710,6 +732,32 @@ def test_validator_blocks_finalized_market_as_campaign_evidence(tmp_path: Path) 
         result["evidence_classification"]
         == "MARKET_CLOSED_OR_FINALIZED_ENDS_CAMPAIGN_EVIDENCE"
     )
+    assert result["data_integrity_classification"] == "DATA_INTEGRITY_PASS"
+    assert result["campaign_evidence_valid"] is False
+    assert (
+        result["evidence_validity_classification"]
+        == "CAMPAIGN_EVIDENCE_INVALID_MARKET_LIFECYCLE"
+    )
+
+
+def test_validator_separates_lifecycle_rejection_from_data_integrity(tmp_path: Path) -> None:
+    plan_kalshi_ws_campaign(
+        output_dir=tmp_path,
+        campaign_id="lifecycle-rejected",
+        duration_seconds=SEVEN_DAY_SECONDS,
+        max_markets=1,
+        now=NOW,
+        market_metadata=_market_metadata(
+            close_time="2026-07-05T00:00:00Z",
+            event_category="Finance",
+            event_metadata_fetched=True,
+        ),
+    )
+    _write_ok_heartbeat(tmp_path)
+
+    result = validate_campaign(input_dir=tmp_path)
+
+    assert result["status"] == "pass"
     assert result["data_integrity_classification"] == "DATA_INTEGRITY_PASS"
     assert result["campaign_evidence_valid"] is False
     assert (
