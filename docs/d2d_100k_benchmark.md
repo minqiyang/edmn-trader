@@ -1,16 +1,16 @@
 # D2D 100k Synthetic Benchmark
 
-- run_time_utc: `2026-07-10T19:13:56Z`
-- source_commit: `35cbb6f39fd4322e22a8f8501a29b1a1b9012227`
+- run_time_utc: `2026-07-10T19:20:35Z`
+- source_commit: `88b87daf08f95c25c0c4be678ba1f412693244ed`
 - event_count: `100000`
 - checkpoint_every_records: `1000`
 - declared_memory_profile_bytes: `1073741824`
 - Python: `3.12.13`
 - platform: `macOS-27.0-arm64-arm-64bit`
-- elapsed_seconds: `1.0283062499947846`
-- peak_rss_mib: `35.59375`
+- elapsed_seconds: `1.0635656249942258`
+- peak_rss_mib: `35.71875`
 - checkpoint_count: `102`
-- checkpoint_p95_seconds: `0.0003340413517435081`
+- checkpoint_p95_seconds: `0.0004405847896123305`
 - no_oom: `true`
 - no_full_file_callback_work: `true`
 - valid_hashes: `true`
@@ -21,9 +21,9 @@
 
 | Gate | Limit | Result |
 | --- | ---: | ---: |
-| Completion | <= 600 s | 1.0283 s |
-| Peak RSS | <= 512 MiB | 35.5938 MiB |
-| Checkpoint p95 | <= 1 s | 0.000334 s |
+| Completion | <= 600 s | 1.0636 s |
+| Peak RSS | <= 512 MiB | 35.7188 MiB |
+| Checkpoint p95 | <= 1 s | 0.000441 s |
 | OOM | none | none |
 | Full-file callback work | none | none |
 | Hash verification | pass | pass |
