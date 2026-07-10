@@ -4,12 +4,20 @@ import json
 from datetime import UTC, datetime
 from pathlib import Path
 
+import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 
 from edmn_trader.adapters.kalshi.ws_auth import KalshiWsAuthConfig
+from edmn_trader.adapters.kalshi.ws_events import (
+    KALSHI_WS_RAW_SCHEMA_VERSION,
+    AdmissionStatus,
+    ExclusionReason,
+    SegmentBoundaryReason,
+)
 from edmn_trader.adapters.kalshi.ws_recorder import (
     KalshiWsRecorderConfig,
+    _loads,
     record_kalshi_demo_ws_orderbook,
 )
 
@@ -19,8 +27,18 @@ def test_ws_recorder_writes_snapshot_and_delta_raw_private_events(tmp_path: Path
     websocket = _FakeWebSocket(
         [
             {"type": "subscribed", "id": 1},
-            {"type": "orderbook_snapshot", "market_ticker": "DEMO-MARKET"},
-            {"type": "orderbook_delta", "market_ticker": "DEMO-MARKET"},
+            {
+                "type": "orderbook_snapshot",
+                "sid": 11,
+                "seq": 901,
+                "market_ticker": "DEMO-MARKET",
+            },
+            {
+                "type": "orderbook_delta",
+                "sid": 11,
+                "seq": 902,
+                "market_ticker": "DEMO-MARKET",
+            },
         ]
     )
 
@@ -43,8 +61,29 @@ def test_ws_recorder_writes_snapshot_and_delta_raw_private_events(tmp_path: Path
     assert result.snapshot_count == 1
     assert result.delta_count == 1
     assert result.raw_event_sha256
-    assert "orderbook_delta" in (tmp_path / "raw.jsonl").read_text(encoding="utf-8")
-    assert "KALSHI-ACCESS" not in (tmp_path / "raw.jsonl").read_text(encoding="utf-8")
+    raw_text = (tmp_path / "raw.jsonl").read_text(encoding="utf-8")
+    records = [json.loads(line) for line in raw_text.splitlines()]
+    assert [record["schema_version"] for record in records] == [
+        KALSHI_WS_RAW_SCHEMA_VERSION
+    ] * 3
+    assert [record["local_row_index"] for record in records] == [1, 2, 3]
+    assert [record["native_seq"] for record in records] == [None, 901, 902]
+    assert records[1]["native_sid"] == 11
+    assert records[1]["subscription_command_id"] == 1
+    assert records[1]["admission_status"] == AdmissionStatus.ADMITTED
+    assert records[2]["admission_status"] == AdmissionStatus.ADMITTED
+    assert records[2]["original_payload"]["type"] == "orderbook_delta"
+    assert [json.loads(item) for item in websocket.sent] == [
+        {
+            "id": 1,
+            "cmd": "subscribe",
+            "params": {
+                "channels": ["orderbook_delta"],
+                "market_tickers": ["DEMO-MARKET"],
+            },
+        }
+    ]
+    assert "KALSHI-ACCESS" not in raw_text
 
 
 def test_ws_recorder_reconnects_after_read_failure_with_existing_rows(
@@ -75,7 +114,21 @@ def test_ws_recorder_reconnects_after_read_failure_with_existing_rows(
     assert result.event_count == 2
     assert result.delta_count == 1
     assert result.reconnect_count == 1
-    assert "orderbook_delta" in (tmp_path / "raw.jsonl").read_text(encoding="utf-8")
+    records = [
+        json.loads(line)
+        for line in (tmp_path / "raw.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert records[1]["connection_id"] != records[0]["connection_id"]
+    assert records[1]["segment_id"] != records[0]["segment_id"]
+    assert records[1]["segment_boundary_reason"] == SegmentBoundaryReason.RESUBSCRIPTION
+    assert records[1]["admission_status"] == AdmissionStatus.EXCLUDED
+    assert records[1]["exclusion_reason"] == ExclusionReason.DELTA_BEFORE_SNAPSHOT
+
+
+@pytest.mark.parametrize("raw", ["[]", "null", "1"])
+def test_ws_payload_loader_rejects_non_object_json(raw: str) -> None:
+    with pytest.raises(ValueError, match="JSON object"):
+        _loads(raw)
 
 
 class _FakeWebSocket:

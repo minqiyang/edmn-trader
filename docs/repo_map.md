@@ -55,6 +55,9 @@ context, then read only the files needed for the requested stage. Use `rg` and
   Stage 52 public research platform.
 - `docs/v2_readonly_recorder_campaign.md`: V2 seven-day read-only campaign
   lifecycle gate and evidence boundary.
+- `docs/v2_ws_raw_event_schema.md`: D2A Kalshi WebSocket native envelope,
+  payload hash, sequence/segment semantics, snapshot prerequisite, legacy
+  compatibility, and evidence limitations.
 - `docs/v2_monitor_contract.md`: V2 monitor lifecycle, liveness, and stale
   semantics contract.
 - `docs/stage8_polymarket_readiness.md`: Stage 8 compliance/readiness note.
@@ -90,6 +93,14 @@ context, then read only the files needed for the requested stage. Use `rg` and
 - `src/edmn_trader/adapters/kalshi/readonly_recorder.py`: Stage 40 guarded
   Kalshi Demo read-only recorder with explicit opt-in and mocked-testable
   client injection.
+- `src/edmn_trader/adapters/kalshi/ws_auth.py`: Demo-only authenticated
+  WebSocket header construction and credential preflight boundary.
+- `src/edmn_trader/adapters/kalshi/ws_events.py`: D2A versioned native raw
+  event envelope, deterministic parsed-payload hash, conservative sequence
+  tracker, segment/snapshot admission state, and explicit legacy parser.
+- `src/edmn_trader/adapters/kalshi/ws_recorder.py`: read-only Kalshi Demo
+  WebSocket recorder. It emits D2A envelopes without additional subscriptions
+  or orderbook rebuild behavior.
 - `src/edmn_trader/adapters/kalshi/demo_connector.py`: Stage 49 guarded
   Kalshi Demo request preview and Demo submit path mocked in tests. Read for
   manual approval, risk, paper ledger, Demo allowlist, and audit-redaction
@@ -317,6 +328,12 @@ context, then read only the files needed for the requested stage. Use `rg` and
   recorder guardrail coverage for opt-in, Demo-only config, mocked HTTP
   recording, raw event JSONL, normalized snapshot JSONL, and non-executable
   records.
+- `tests/test_kalshi_ws_events.py`: synthetic D2A envelope, payload hash,
+  native/local sequence, segment, snapshot admission, resync, and legacy
+  compatibility tests.
+- `tests/test_kalshi_ws_recorder.py`: fixture-only recorder integration tests
+  for v2 envelope output, connection/segment boundaries, and pre-snapshot
+  delta exclusion.
 - `tests/test_polymarket_market_recorder.py`: Stage 41 Polymarket US
   market-channel recorder guardrail coverage for opt-in, US-public-only config,
   mocked HTTP recording, raw event JSONL, normalized snapshot JSONL, and

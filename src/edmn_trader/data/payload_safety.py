@@ -11,6 +11,7 @@ _FORBIDDEN_RAW_KEY_PARTS = (
     "apikey",
     "secret",
     "signature",
+    "kalshi-access",
     "token",
     "private_key",
     "password",
@@ -26,9 +27,12 @@ def validate_no_secret_payload(value: Mapping[str, Any], *, path: str = "payload
         if any(forbidden in key_text for forbidden in _FORBIDDEN_RAW_KEY_PARTS):
             msg = f"{path}.{key} must not contain credentials, headers, or secrets"
             raise ValueError(msg)
-        if isinstance(item, Mapping):
-            validate_no_secret_payload(item, path=f"{path}.{key}")
-        elif isinstance(item, Sequence) and not isinstance(item, str | bytes | bytearray):
-            for index, nested_item in enumerate(item):
-                if isinstance(nested_item, Mapping):
-                    validate_no_secret_payload(nested_item, path=f"{path}.{key}[{index}]")
+        _validate_nested_value(item, path=f"{path}.{key}")
+
+
+def _validate_nested_value(value: Any, *, path: str) -> None:
+    if isinstance(value, Mapping):
+        validate_no_secret_payload(value, path=path)
+    elif isinstance(value, Sequence) and not isinstance(value, str | bytes | bytearray):
+        for index, item in enumerate(value):
+            _validate_nested_value(item, path=f"{path}[{index}]")

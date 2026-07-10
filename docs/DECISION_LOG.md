@@ -118,3 +118,16 @@ trading-research target than directional prediction or broad market making. It
 can start with deterministic offline candidate metadata while keeping fees,
 slippage, stale data, failed legs, manual review, and production trading
 boundaries explicit.
+
+## 2026-07-10: Version native WebSocket evidence before rebuild
+
+Decision: record Kalshi WebSocket messages as `edmn.kalshi.ws.raw.v2`, keep
+native SID/sequence separate from local append order, default continuity
+semantics to unknown, and require a snapshot for each requested market before
+admitting that market's deltas. Hash the canonical parsed payload only; leave
+wire-byte evidence and serialized-file durability to separately reviewed work.
+
+Rationale: downstream rebuild must not confuse recorder order with exchange
+order, cross market-specific snapshot boundaries, or treat semantic JSON hashes
+as exact wire-frame evidence. This establishes the narrow evidence contract
+without implementing rebuild or expanding network behavior.

@@ -8,6 +8,42 @@ on correctness, staged delivery, risk boundaries, deterministic tests, and the
 ability to explain how a trading research platform is built from safe
 foundations.
 
+## D2A raw WebSocket schema and transport integrity
+
+D2A fixes an evidence-modeling ambiguity in the first read-only WebSocket
+recorder: its old top-level `sequence` was only `len(rows) + 1`, while any
+venue-native SID, sequence, timestamp, and unknown fields remained buried in
+the payload. That shape could be mistaken for exchange ordering and could not
+express connection, subscription, snapshot, or resynchronization boundaries.
+
+The new `edmn.kalshi.ws.raw.v2` envelope keeps native values unchanged under
+explicit `native_*` fields and preserves the complete parsed payload. Local
+append order is now `local_row_index`. A deterministic canonical-JSON payload
+hash protects each parsed native payload without adding whole-file durability
+work. Secret-like payload keys remain fail-closed.
+
+An integrity tracker assigns connection and segment identities, begins every
+orderbook segment in `RESYNC_REQUIRED`, excludes deltas until a snapshot, and
+starts fresh history after a supported-policy gap, duplicate, out-of-order
+observation, SID change, reconnect, or resubscription. Default sequence
+semantics remain unknown: increasing values are observations, not proof of
+contiguous delivery. Legacy rows parse through a typed local-sequence-only view
+and cannot masquerade as native sequence evidence.
+
+Snapshot admission is market-specific inside a segment: one requested market's
+snapshot cannot admit another requested market's deltas. Missing and
+unrequested market tickers remain preserved but excluded.
+
+This checkpoint is fixture-only and does not add subscriptions, venue calls,
+book reconstruction, campaign qualification, execution behavior, or trading
+evidence. The existing summary `gap_count=0` remains unmeasured until a later,
+separately authorized integrity/classification stage.
+
+The merge review retained the parsed-payload hash contract and added explicit
+UTF-8, non-finite-number, and mutation checks. It also made non-object frames
+fail closed and extended secret-key rejection through nested sequences and all
+Kalshi authentication-header names.
+
 ## Round 8C-D1 Demo market discovery
 
 The first VPS WebSocket smoke stopped with `NO_ACTIVE_DEMO_MARKET`, but a
