@@ -1149,13 +1149,120 @@ def test_validator_derives_dimensions_instead_of_trusting_mutable_summaries(
     assert monitor["run_info"]["health"] == "BLOCKED"
 
 
-def test_actual_runtime_rejects_nested_credentials_without_persisting_them(
+def test_validator_rejects_checkpoint_row_count_corruption(tmp_path: Path) -> None:
+    session = _session(tmp_path, configured_duration_seconds=1)
+    session.record_event(
+        _tracker().record(
+            {"type": "heartbeat", "sid": 41, "seq": 1},
+            local_row_index=1,
+            received_at_utc=START,
+            received_monotonic_ns=1,
+        )
+    )
+    summary = session.close(
+        ended_at_utc=START + timedelta(seconds=1),
+        terminal_reason="bounded_duration_complete",
+        stop_requested=False,
+        connection_established=True,
+        subscription_acknowledged=True,
+        blocker_code=None,
+    )
+    checkpoint_path = tmp_path / summary["segment_summaries"][0]["checkpoint_path"]
+    checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    checkpoint["last_committed_local_row_index"] = 999
+    checkpoint_path.write_text(json.dumps(checkpoint) + "\n", encoding="utf-8")
+
+    validation = validate_d2_runtime_artifacts(tmp_path)
+
+    assert validation["status"] == "fail"
+    assert any("checkpoint row count mismatch" in item for item in validation["failures"])
+
+
+def test_validator_rejects_mislabeled_threshold_policy(tmp_path: Path) -> None:
+    session = _session(tmp_path, configured_duration_seconds=1)
+    session.record_event(
+        _tracker().record(
+            {"type": "heartbeat", "sid": 41, "seq": 1},
+            local_row_index=1,
+            received_at_utc=START,
+            received_monotonic_ns=1,
+        )
+    )
+    session.close(
+        ended_at_utc=START + timedelta(seconds=1),
+        terminal_reason="bounded_duration_complete",
+        stop_requested=False,
+        connection_established=True,
+        subscription_acknowledged=True,
+        blocker_code=None,
+    )
+    for name in ("campaign_summary.json", "campaign_manifest.json", "run_metadata.json"):
+        path = tmp_path / name
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload["threshold_policy_version"] = "edmn.v2.thresholds.unreviewed"
+        payload["threshold_policy"]["maximum_disconnect_seconds"] = 999
+        path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+
+    validation = validate_d2_runtime_artifacts(tmp_path)
+
+    assert validation["status"] == "fail"
+    assert any("threshold policy" in item for item in validation["failures"])
+
+
+def test_failed_lifecycle_polling_remains_rate_limited(
     tmp_path: Path,
 ) -> None:
     fake_time = _FakeTime()
-    secret_value = "fixture-secret-must-not-persist"
+    calls: list[int] = []
+
+    def failing_provider(_ticker: str) -> dict[str, object]:
+        calls.append(fake_time.seconds)
+        raise RuntimeError("synthetic lifecycle outage")
+
+    summary = run_d2_kalshi_ws_runtime(
+        output_dir=tmp_path / "run",
+        campaign_id="d2e-lifecycle-rate-limit",
+        mode="read_only_websocket_smoke",
+        duration_seconds=1_000,
+        market_metadata={"ticker": MARKET, "status": "active"},
+        market_selection={"selection_profile": "smoke", "selection_gate_result": "pass"},
+        auth=KalshiWsAuthConfig(
+            api_key_id="fixture-id",
+            private_key_path=_private_key(tmp_path),
+        ),
+        provenance=RuntimeCodeProvenance(COMMIT, "main", "https://example.test/repo", False),
+        websocket_factory=lambda *_args, **_kwargs: _FakeWebSocket(
+            [{"type": "heartbeat", "sid": 41} for _ in range(100)]
+        ),
+        lifecycle_provider=failing_provider,
+        now=fake_time.now,
+        monotonic=fake_time.monotonic,
+        monotonic_ns=fake_time.monotonic_ns,
+        max_events=100,
+    )
+
+    assert summary["event_count"] == 100
+    assert 1 < len(calls) <= 5
+    assert all(
+        current - previous >= 60
+        for previous, current in zip(calls, calls[1:-1], strict=False)
+    )
+
+
+@pytest.mark.parametrize("forbidden_key", ["api_key", "order_id"])
+def test_actual_runtime_rejects_nested_private_fields_without_persisting_them(
+    tmp_path: Path,
+    forbidden_key: str,
+) -> None:
+    fake_time = _FakeTime()
+    private_value = "fixture-private-value-must-not-persist"
     websocket = _FakeWebSocket(
-        [{"type": "subscribed", "msg": {"metadata": {"api_key": secret_value}}}]
+        [
+            {
+                "type": "subscribed",
+                "msg": {"metadata": {forbidden_key: private_value}},
+            }
+        ]
     )
     summary = run_d2_kalshi_ws_runtime(
         output_dir=tmp_path / "run",
@@ -1178,7 +1285,7 @@ def test_actual_runtime_rejects_nested_credentials_without_persisting_them(
 
     assert summary["event_count"] == 0
     assert summary["blocker_code"] is not None
-    assert secret_value not in "".join(
+    assert private_value not in "".join(
         path.read_text(encoding="utf-8")
         for path in (tmp_path / "run").rglob("*")
         if path.is_file()

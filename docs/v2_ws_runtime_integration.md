@@ -87,6 +87,13 @@ from mutable summaries. The monitor blocks on validator failure. Legacy v1
 artifacts continue through the historical reader without being rewritten or
 promoted.
 
+Terminal validation cross-checks row counts and byte offsets across chain,
+checkpoint, manifest, and segment summary, and requires exact reviewed
+threshold-policy provenance. Failed lifecycle observations advance the polling
+attempt clock so a venue outage cannot create a request per WebSocket frame.
+Private account, order, and fill fields are rejected recursively before raw D2A
+persistence.
+
 ## Safety
 
 D2E tests use mocked WebSocket and lifecycle transports only. This delivery

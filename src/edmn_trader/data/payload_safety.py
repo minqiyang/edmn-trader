@@ -17,6 +17,18 @@ _FORBIDDEN_RAW_KEY_PARTS = (
     "password",
     "headers",
 )
+_PRIVATE_ACCOUNT_KEYS = {
+    "account",
+    "account_id",
+    "client_order_id",
+    "fill",
+    "fill_id",
+    "member_id",
+    "order",
+    "order_id",
+    "portfolio_id",
+    "user_id",
+}
 
 
 def validate_no_secret_payload(value: Mapping[str, Any], *, path: str = "payload") -> None:
@@ -28,6 +40,27 @@ def validate_no_secret_payload(value: Mapping[str, Any], *, path: str = "payload
             msg = f"{path}.{key} must not contain credentials, headers, or secrets"
             raise ValueError(msg)
         _validate_nested_value(item, path=f"{path}.{key}")
+
+
+def validate_no_private_account_payload(
+    value: Mapping[str, Any],
+    *,
+    path: str = "payload",
+) -> None:
+    """Reject private account/order/fill fields from public market-data evidence."""
+
+    for key, item in value.items():
+        if str(key).lower() in _PRIVATE_ACCOUNT_KEYS:
+            raise ValueError(f"{path}.{key} must not contain private account/order data")
+        if isinstance(item, Mapping):
+            validate_no_private_account_payload(item, path=f"{path}.{key}")
+        elif isinstance(item, Sequence) and not isinstance(item, str | bytes | bytearray):
+            for index, nested in enumerate(item):
+                if isinstance(nested, Mapping):
+                    validate_no_private_account_payload(
+                        nested,
+                        path=f"{path}.{key}[{index}]",
+                    )
 
 
 def _validate_nested_value(value: Any, *, path: str) -> None:

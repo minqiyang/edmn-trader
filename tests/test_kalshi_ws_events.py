@@ -568,6 +568,20 @@ def test_secret_like_keys_nested_in_sequences_are_rejected() -> None:
         )
 
 
+@pytest.mark.parametrize("private_key", ["account_id", "fill_id", "order_id"])
+def test_private_account_keys_nested_in_sequences_are_rejected(private_key: str) -> None:
+    with pytest.raises(ValueError, match="private account/order data"):
+        _tracker().record(
+            {
+                "type": "trade",
+                "msg": {"metadata": [{private_key: "private-value"}]},
+            },
+            local_row_index=1,
+            received_at_utc=RECEIVED_AT,
+            received_monotonic_ns=123_456,
+        )
+
+
 def _tracker(
     *,
     continuity_policy: SequenceContinuityPolicy = SequenceContinuityPolicy.UNKNOWN,

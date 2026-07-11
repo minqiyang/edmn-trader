@@ -19,7 +19,10 @@ from edmn_trader.adapters.kalshi.ws_events import (
     parse_kalshi_ws_raw_record,
 )
 from edmn_trader.data.jsonl import write_jsonl_records
-from edmn_trader.data.payload_safety import validate_no_secret_payload
+from edmn_trader.data.payload_safety import (
+    validate_no_private_account_payload,
+    validate_no_secret_payload,
+)
 
 PUBLIC_TRADE_SCHEMA_VERSION = "edmn.kalshi.public_trade.v1"
 LIFECYCLE_SCHEMA_VERSION = "edmn.kalshi.rest_lifecycle.v1"
@@ -359,6 +362,11 @@ def build_public_trade_stream(
             filtered += 1
             continue
         payload = _native_message(event.original_payload)
+        try:
+            validate_no_private_account_payload(payload)
+        except ValueError:
+            quarantined += 1
+            continue
         if _ACCOUNT_ONLY_FIELDS.intersection(key.lower() for key in payload):
             quarantined += 1
             continue

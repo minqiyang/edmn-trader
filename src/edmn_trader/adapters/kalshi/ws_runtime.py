@@ -169,6 +169,7 @@ def run_d2_kalshi_ws_runtime(
             observed_at - last_lifecycle_poll
         ).total_seconds() < 60:
             return
+        last_lifecycle_poll = observed_at
         try:
             current = provider(session.selected_market_ticker)
             session.record_lifecycle(
@@ -176,7 +177,6 @@ def run_d2_kalshi_ws_runtime(
                 observed_at_utc=observed_at,
                 evaluated_at_utc=observed_at,
             )
-            last_lifecycle_poll = observed_at
         except Exception:
             lifecycle_blocker = "LIFECYCLE_OBSERVATION_FAILED"
 
@@ -1181,6 +1181,16 @@ def validate_d2_runtime_artifacts(input_dir: Path) -> dict[str, object]:
         failures.append(f"campaign_summary unavailable: {exc}")
     if summary.get("runtime_schema_version") != D2_RUNTIME_SCHEMA_VERSION:
         failures.append("runtime schema missing or unsupported")
+    if summary.get("raw_event_schema_version") != KALSHI_WS_RAW_SCHEMA_VERSION:
+        failures.append("raw event schema missing or unsupported")
+    if summary.get("evidence_schema_version") != EVIDENCE_CHAIN_SCHEMA_VERSION:
+        failures.append("evidence schema missing or unsupported")
+    if summary.get("threshold_policy_version") != V2_THRESHOLD_POLICY.version:
+        failures.append("threshold policy version contradicts the runtime contract")
+    if summary.get("threshold_policy") != V2_THRESHOLD_POLICY.to_record():
+        failures.append("threshold policy values contradict the runtime contract")
+    if summary.get("threshold_source_commit") != summary.get("public_code_commit"):
+        failures.append("threshold source commit contradicts runtime provenance")
     required = (
         "threshold_policy_version",
         "threshold_source_commit",
@@ -1226,6 +1236,19 @@ def validate_d2_runtime_artifacts(input_dir: Path) -> dict[str, object]:
                 failures.append(f"checkpoint schema mismatch: {segment_id}")
             if checkpoint.get("chain_hash") != segment["terminal_chain_hash"]:
                 failures.append(f"checkpoint hash mismatch: {segment_id}")
+            expected_row_count = verified.record_count
+            expected_byte_offset = verified.byte_offset
+            for label, artifact in (
+                ("checkpoint", checkpoint),
+                ("manifest segment", segment),
+                ("segment summary", segment_summary),
+            ):
+                if artifact.get("segment_id") != segment_id:
+                    failures.append(f"{label} identity mismatch: {segment_id}")
+                if artifact.get("last_committed_local_row_index") != expected_row_count:
+                    failures.append(f"{label} row count mismatch: {segment_id}")
+                if artifact.get("byte_offset") != expected_byte_offset:
+                    failures.append(f"{label} byte offset mismatch: {segment_id}")
             if digest != segment["closed_file_sha256"]:
                 failures.append(f"closed-file hash mismatch: {segment_id}")
             if segment.get("schema_version") != EVIDENCE_SUMMARY_SCHEMA_VERSION:
@@ -1700,6 +1723,7 @@ def recover_d2_runtime_artifacts(
         for item in summary["segment_summaries"]
     ]
     summary["status"] = "d2_runtime_crash_recovered"
+    summary["threshold_policy"] = V2_THRESHOLD_POLICY.to_record()
     started_at = _parse_required_time(summary.get("started_at"), "started_at")
     actual_elapsed = _decimal_seconds(recovered_at_utc - started_at)
     recovered_windows = []

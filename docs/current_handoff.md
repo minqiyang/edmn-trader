@@ -38,6 +38,9 @@ connection segment to carry its own sequence/rebuild evidence, binds channel
 acknowledgment to command `1` and both public channels, supports detached-HEAD
 deployment provenance, preserves blocked-discovery policy metadata, and makes
 crash-recovered artifacts validator/monitor consumable without relaunch.
+Correction round 3 also cross-checks checkpoint counts/offsets, validates the
+exact threshold policy, rate-limits failed lifecycle polling attempts, and
+rejects nested private account/order/fill fields before persistence.
 
 This checkpoint is software-only. Tests use mocked WebSocket and lifecycle
 transports. No VPS, credential, campaign, private raw data, production endpoint,

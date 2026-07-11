@@ -70,6 +70,12 @@ historical pass across an unknown current segment; blocked discovery preserves
 selection policy; and crash recovery emits synchronized, validator-consumable
 terminal artifacts without restart. Each correction has a focused regression.
 
+Correction round 3 tightened the remaining validator and runtime boundaries:
+checkpoint row counts and byte offsets must agree across the chain, checkpoint,
+manifest, and segment summary; threshold values/version/source commit must
+match the reviewed policy; failed lifecycle polls remain rate-limited; and
+nested private account/order/fill fields are rejected before D2A persistence.
+
 ## D2D evidence classification, durability, and performance
 
 D2D turns the D2A-D2C fixture contracts into an explicit software evidence
