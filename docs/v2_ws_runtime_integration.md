@@ -76,6 +76,8 @@ not rewritten for every frame.
   receives an observable frame.
 - Snapshot/delta transport does not imply rebuild, duration, backup, sequence,
   supervisor, or replay qualification.
+- Pricing or identity metadata contradictions on control frames are retained as
+  rebuild invalidation reasons; a valid earlier snapshot cannot hide them.
 - `replay_qualification` remains `UNKNOWN` and `replay_qualified` remains
   false for D2E software evidence.
 

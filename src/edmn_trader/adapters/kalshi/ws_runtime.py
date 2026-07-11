@@ -1289,6 +1289,9 @@ class RuntimeEvidenceSession:
         }
         if event.native_type in {"orderbook_snapshot", "orderbook_delta"}:
             summary["orderbook_row_count"] += 1
+        if result.reason is not None:
+            summary["invalidation_reasons"][result.reason] += 1
+            summary["native_state_valid"] = False
         if result.frame is not None:
             frame = result.frame
             frame_record = frame.to_record()
@@ -1308,8 +1311,6 @@ class RuntimeEvidenceSession:
         elif event.native_type in {"orderbook_snapshot", "orderbook_delta"}:
             summary["excluded_row_count"] += 1
             self._rebuild_excluded_count += 1
-            if result.reason is not None:
-                summary["invalidation_reasons"][result.reason] += 1
         return record
 
     def _sequence_summary_records(self) -> list[dict[str, object]]:
@@ -2165,6 +2166,23 @@ def _validate_runtime_launch_record(
         raise ValueError("durable runtime launch threshold provenance contradicts code")
     if not isinstance(launch.get("use_yes_price"), bool):
         raise ValueError("durable runtime launch use_yes_price must be Boolean")
+    provenance_fields = {
+        "public_code_commit": launch.get("public_code_commit"),
+        "branch": launch.get("branch"),
+        "remote": launch.get("remote"),
+        "dirty_state": launch.get("dirty_state"),
+    }
+    if not all(
+        isinstance(provenance_fields[field], str)
+        for field in ("public_code_commit", "branch", "remote")
+    ):
+        raise ValueError("durable runtime code provenance types are invalid")
+    try:
+        provenance = RuntimeCodeProvenance(**provenance_fields)
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise ValueError("durable runtime code provenance is invalid") from exc
+    if provenance.to_record() != provenance_fields:
+        raise ValueError("durable runtime code provenance is not canonical")
     for field in ("selected_market_metadata", "selected_market_selection"):
         value = _required_mapping(launch, field)
         validate_no_secret_payload(value, path=f"runtime_launch.{field}")
@@ -2830,6 +2848,10 @@ def _accumulate_validation_rebuild(
     if event.native_type in {"orderbook_snapshot", "orderbook_delta"}:
         summary["orderbook_row_count"] += 1
     frame = result.get("frame")
+    reason = result.get("reason")
+    if reason is not None:
+        summary["invalidation_reasons"][str(reason)] += 1
+        summary["native_state_valid"] = False
     if isinstance(frame, Mapping):
         summary["frame_count"] += 1
         counts["rebuild_frame_count"] += 1
@@ -2845,9 +2867,6 @@ def _accumulate_validation_rebuild(
             summary["snapshot_first_admitted"] = True
     elif event.native_type in {"orderbook_snapshot", "orderbook_delta"}:
         summary["excluded_row_count"] += 1
-        reason = result.get("reason")
-        if reason is not None:
-            summary["invalidation_reasons"][str(reason)] += 1
 
 
 def _sequence_summary_records(

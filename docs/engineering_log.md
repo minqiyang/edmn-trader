@@ -124,6 +124,9 @@ The final boundary audit recursively screens private account/order fields
 through nested sequences, revalidates completed roots from the monitor without
 rewriting reports, binds recovery tail counts to pre/post file sizes, and
 preflights all manifest evidence paths for symlink aliases before mutation.
+It also makes control-frame pricing/identity contradictions visible in rebuild
+summaries and validates canonical branch, remote, commit, and dirty-state
+provenance from the durable launch record.
 
 ## D2D evidence classification, durability, and performance
 

@@ -1090,6 +1090,84 @@ def test_runtime_pricing_mode_conflict_invalidates_rebuild_dimension(tmp_path: P
     )
 
 
+def test_control_frame_pricing_conflict_invalidates_rebuild_dimension(
+    tmp_path: Path,
+) -> None:
+    session = _session(tmp_path, configured_duration_seconds=2)
+    tracker = _tracker()
+    events = [
+        tracker.record(
+            {
+                "type": "orderbook_snapshot",
+                "sid": 41,
+                "seq": 1,
+                "msg": {
+                    "market_ticker": MARKET,
+                    "use_yes_price": False,
+                    "yes_dollars_fp": [["0.42", "3"]],
+                    "no_dollars_fp": [],
+                },
+            },
+            local_row_index=1,
+            received_at_utc=START,
+            received_monotonic_ns=1,
+        ),
+        tracker.record(
+            {
+                "type": "ack",
+                "sid": 41,
+                "seq": 2,
+                "msg": {"use_yes_price": True},
+            },
+            local_row_index=2,
+            received_at_utc=START + timedelta(seconds=1),
+            received_monotonic_ns=2,
+        ),
+    ]
+    for event in events:
+        session.record_event(event)
+
+    summary = session.close(
+        ended_at_utc=START + timedelta(seconds=2),
+        terminal_reason="bounded_duration_complete",
+        stop_requested=False,
+        connection_established=True,
+        subscription_acknowledged=True,
+        blocker_code=None,
+    )
+
+    assert summary["independent_evidence_classifications"]["rebuild_integrity"] == "FAIL"
+    assert any(
+        "CONTRADICTORY_PRICING_MODE" in item["invalidation_reasons"]
+        for item in summary["rebuild_summaries"]
+    )
+
+
+def test_running_monitor_blocks_unsafe_or_incomplete_runtime_summary(tmp_path: Path) -> None:
+    _session(tmp_path, configured_duration_seconds=300)
+    summary_path = tmp_path / "campaign_summary.json"
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    summary.pop("independent_evidence_classifications")
+    summary["selected_market_metadata"]["order_id"] = "private-value"
+    summary_path.write_text(json.dumps(summary) + "\n", encoding="utf-8")
+
+    snapshot = build_monitor_snapshot(tmp_path, now=START + timedelta(seconds=1))
+
+    assert snapshot["run_info"]["health"] == "BLOCKED"
+    assert snapshot["validation"]["status"] == "fail"
+
+
+def test_validator_rejects_noncanonical_durable_provenance(tmp_path: Path) -> None:
+    session = _session(tmp_path, configured_duration_seconds=1)
+    launch_path = tmp_path / session.current_data_path.relative_to(tmp_path)
+    launch_record = json.loads(launch_path.read_text(encoding="utf-8").splitlines()[0])
+    launch = launch_record["runtime_launch"]
+    launch["branch"] = ""
+
+    with pytest.raises(ValueError, match="provenance"):
+        ws_runtime._validate_runtime_launch_record(launch, session.campaign_id)
+
+
 def test_quiet_orderbook_does_not_become_transport_loss_and_lifecycle_stays_fresh(
     tmp_path: Path,
 ) -> None:

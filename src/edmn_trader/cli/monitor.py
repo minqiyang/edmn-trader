@@ -17,6 +17,10 @@ from edmn_trader.adapters.kalshi.ws_runtime import (
     validate_d2_runtime_artifacts,
 )
 from edmn_trader.data.evidence_policy import V2_THRESHOLD_POLICY
+from edmn_trader.data.payload_safety import (
+    validate_no_private_account_payload,
+    validate_no_secret_payload,
+)
 from edmn_trader.execution.private_live_gate import attempt_private_live_execution
 
 MonitorFormat = Literal["json", "markdown", "table"]
@@ -143,6 +147,26 @@ def _refresh_d2_validation(
         campaign.get("runtime_schema_version") != D2_RUNTIME_SCHEMA_VERSION
         or campaign.get("status") == "d2_runtime_running"
     ):
+        if campaign.get("status") == "d2_runtime_running":
+            try:
+                validate_no_secret_payload(campaign, path="campaign_summary")
+                validate_no_private_account_payload(campaign, path="campaign_summary")
+            except ValueError as exc:
+                warnings.append(f"CORRUPT_SUMMARY: campaign_summary.json: {exc}")
+                refreshed = dict(summaries)
+                refreshed["campaign_summary.json"] = {
+                    "runtime_schema_version": D2_RUNTIME_SCHEMA_VERSION,
+                    "status": "d2_runtime_corrupt",
+                }
+                refreshed["campaign_validation.json"] = {
+                    **summaries.get("campaign_validation.json", {}),
+                    "runtime_schema_version": D2_RUNTIME_SCHEMA_VERSION,
+                    "status": "fail",
+                    "overall_evidence_classification": "FAIL",
+                    "failures": ["running campaign summary failed payload safety"],
+                    "strict_verdict": "STRICT NO-GO",
+                }
+                return refreshed
         return dict(summaries)
     try:
         validation = validate_d2_runtime_artifacts(input_dir, persist=False)
@@ -227,6 +251,13 @@ def _read_summaries(input_dir: Path, warnings: list[str]) -> dict[str, dict[str,
             warnings.append(f"CORRUPT_SUMMARY: {name}: {exc}")
             continue
         if isinstance(payload, dict):
+            if name == "campaign_summary.json":
+                try:
+                    validate_no_secret_payload(payload, path=name)
+                    validate_no_private_account_payload(payload, path=name)
+                except ValueError as exc:
+                    warnings.append(f"CORRUPT_SUMMARY: {name}: {exc}")
+                    continue
             summaries[name] = _redact_mapping(payload)
         else:
             warnings.append(f"CORRUPT_SUMMARY: {name}: expected JSON object")
@@ -978,11 +1009,13 @@ def _health(
         if validation.get("status") in {"fail", "blocked"}:
             return "BLOCKED"
         dimensions = campaign.get("independent_evidence_classifications")
-        if isinstance(dimensions, Mapping):
-            if any(value == "FAIL" for value in dimensions.values()):
-                return "BLOCKED"
-            if any(value == "UNKNOWN" for value in dimensions.values()):
-                return "WARNING"
+        if not isinstance(dimensions, Mapping):
+            warnings.append("D2_RUNTIME_VALIDATION_FAILED: evidence dimensions are unavailable")
+            return "BLOCKED"
+        if any(value == "FAIL" for value in dimensions.values()):
+            return "BLOCKED"
+        if any(value == "UNKNOWN" for value in dimensions.values()):
+            return "WARNING"
     if (
         risk.get("kill_switch")
         or risk.get("decision") == "reject"

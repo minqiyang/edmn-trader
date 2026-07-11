@@ -48,6 +48,8 @@ numbers while the repository is still in early research scaffolding.
   The monitor revalidates completed D2 roots without rewriting the report,
   rejects unsafe fixed metadata, and recovery records bind partial-tail counts
   to pre/post file sizes while preflighting all manifested symlink paths.
+  Nested private fields, control-frame pricing contradictions, and noncanonical
+  launch provenance now fail closed before evidence can be presented as valid.
   Legacy v1 artifacts remain readable but are not selected for new WebSocket
   runs. Tests are mocked and public live trading remains disabled.
 - Added D2D orthogonal evidence classification, timestamp-derived duration,
