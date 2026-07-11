@@ -168,6 +168,17 @@ def _require_empty_runtime_root(root: Path) -> None:
         raise FileExistsError("new D2 runtime requires an empty artifact root")
 
 
+def _contained_artifact_path(root: Path, value: object) -> Path:
+    relative = Path(str(value))
+    if relative.is_absolute():
+        raise ValueError("artifact path must be relative to the runtime root")
+    resolved_root = root.resolve()
+    candidate = (resolved_root / relative).resolve(strict=False)
+    if candidate == resolved_root or resolved_root not in candidate.parents:
+        raise ValueError("artifact path escapes the runtime root")
+    return candidate
+
+
 def run_d2_kalshi_ws_runtime(
     *,
     output_dir: Path,
@@ -1374,11 +1385,15 @@ def validate_d2_runtime_artifacts(input_dir: Path) -> dict[str, object]:
         failures.append("at least one closed evidence segment is required")
         segments = []
     runtime_data_paths: list[Path] = []
+    listed_segment_paths: set[Path] = set()
     for segment in segments:
         try:
-            data_path = root / str(segment["data_path"])
-            checkpoint_path = root / str(segment["checkpoint_path"])
-            segment_summary_path = root / str(segment["summary_path"])
+            data_path = _contained_artifact_path(root, segment["data_path"])
+            checkpoint_path = _contained_artifact_path(root, segment["checkpoint_path"])
+            segment_summary_path = _contained_artifact_path(root, segment["summary_path"])
+            listed_segment_paths.update(
+                (data_path, checkpoint_path, segment_summary_path)
+            )
             segment_id = str(segment["segment_id"])
             verified = verify_segment_chain(data_path, segment_id=segment_id)
             checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
@@ -1429,6 +1444,14 @@ def validate_d2_runtime_artifacts(input_dir: Path) -> dict[str, object]:
                     )
         except (KeyError, OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
             failures.append(f"segment verification failed: {exc}")
+    evidence_root = root / "evidence_segments"
+    actual_segment_paths = {
+        path.resolve()
+        for pattern in ("*.events.jsonl", "*.checkpoint.json", "*.summary.json")
+        for path in evidence_root.glob(pattern)
+    }
+    if actual_segment_paths != listed_segment_paths:
+        failures.append("segment artifact inventory contains missing or unlisted files")
     for sibling_name in ("campaign_manifest.json", "run_metadata.json"):
         try:
             sibling = json.loads((root / sibling_name).read_text(encoding="utf-8"))
@@ -1645,7 +1668,8 @@ def _iter_summary_runtime_records(
     segments: Iterable[Mapping[str, object]],
 ) -> Iterator[dict[str, object]]:
     return chain.from_iterable(
-        _iter_runtime_records(root / str(segment["data_path"])) for segment in segments
+        _iter_runtime_records(_contained_artifact_path(root, segment["data_path"]))
+        for segment in segments
     )
 
 
@@ -1797,7 +1821,6 @@ def _derive_runtime_validation(
     raw_observed_min: datetime | None = None
     raw_observed_max: datetime | None = None
     durable_ack_channels: dict[str, set[str]] = {}
-    subscription_control_connections: set[str] = set()
     counts: Counter[str] = Counter()
     selected_market: str | None = None
     launch_started_at: datetime | None = None
@@ -1932,7 +1955,6 @@ def _derive_runtime_validation(
             event.native_type or "unknown",
         )
         if event.native_type in {"subscribed", "ack", "ok", "error", "rejected"}:
-            subscription_control_connections.add(event.connection_id)
             durable_ack_channels.setdefault(event.connection_id, set()).update(
                 control_channels
             )
@@ -2139,12 +2161,7 @@ def _derive_runtime_validation(
         for connection_id, channels in durable_ack_channels.items()
         if REQUIRED_PUBLIC_CHANNELS <= channels
     }
-    grounded_acknowledged_ids = {
-        connection_id
-        for connection_id in acknowledged_ids
-        if connection_id not in subscription_control_connections
-        or connection_id in durable_acknowledged_ids
-    }
+    grounded_acknowledged_ids = acknowledged_ids & durable_acknowledged_ids
     derived_subscription_acknowledged = bool(
         opened_ids and opened_ids <= grounded_acknowledged_ids and not rejected
     )
@@ -2672,8 +2689,8 @@ def recover_d2_runtime_artifacts(
     segment = open_segments[0]
     while True:
         segment_id = str(segment["segment_id"])
-        data_path = root / str(segment["data_path"])
-        checkpoint_path = root / str(segment["checkpoint_path"])
+        data_path = _contained_artifact_path(root, segment["data_path"])
+        checkpoint_path = _contained_artifact_path(root, segment["checkpoint_path"])
         closed_summary_path = data_path.with_name(f"{segment_id}.summary.json")
         if not closed_summary_path.is_file():
             break
@@ -2696,7 +2713,11 @@ def recover_d2_runtime_artifacts(
         next_segment_id = _next_rotated_segment_id(segment_id)
         next_data_path = data_path.with_name(f"{next_segment_id}.events.jsonl")
         next_checkpoint_path = data_path.with_name(f"{next_segment_id}.checkpoint.json")
-        if not next_data_path.is_file() or not next_checkpoint_path.is_file():
+        successor_data_exists = next_data_path.exists()
+        successor_checkpoint_exists = next_checkpoint_path.exists()
+        if successor_data_exists != successor_checkpoint_exists:
+            raise ValueError("finalized rotation has a partial successor segment")
+        if not successor_data_exists:
             segment = finalized_record
             break
         segment = {
@@ -2709,8 +2730,8 @@ def recover_d2_runtime_artifacts(
 
     segment_id = str(segment["segment_id"])
     next_segment_id = f"{summary['campaign_id']}.recovery.next"
-    data_path = root / str(segment["data_path"])
-    checkpoint_path = root / str(segment["checkpoint_path"])
+    data_path = _contained_artifact_path(root, segment["data_path"])
+    checkpoint_path = _contained_artifact_path(root, segment["checkpoint_path"])
     closed_summary_path = data_path.with_name(f"{segment_id}.summary.json")
     already_finalized = closed_summary_path.is_file()
     if already_finalized:

@@ -63,7 +63,8 @@ not rewritten for every frame.
   `trade` channel set; an acknowledgment from an earlier connection is never
   carried forward.
 - Subscription PASS is reconstructed from the durable raw channel
-  acknowledgment frames and cross-checked against typed connection evidence.
+  acknowledgment frames for every connection and cross-checked against typed
+  connection evidence; typed acknowledgment alone cannot pass.
 - Public trade/status channel SIDs cannot reset orderbook snapshot or sequence
   state; orderbook integrity follows only the orderbook channel SID.
 - Increasing sequence values under unknown semantics remain unknown; they do
@@ -144,6 +145,9 @@ connection windows must fit without overlap inside terminal timing boundaries.
 Terminal validation and recovery stream D2A rows through bounded accumulators;
 the 100,000-event runtime gate stays below the declared 64 MiB peak. A missing
 selected-market orderbook observation is `UNKNOWN_NOT_OBSERVED`, never `FRESH`.
+Manifest paths must remain relative and resolve inside the run root. Validation
+accounts for every segment data/checkpoint/summary file, and recovery rejects a
+partially created rotation successor rather than ignoring its evidence.
 
 ## Safety
 

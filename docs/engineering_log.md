@@ -112,6 +112,10 @@ and reconstructs channel coverage during validation. A checkpointed launch
 record now binds selection/time-to-close metadata and explicit legacy-side
 pricing (`use_yes_price=false`). Validator and recovery replay records as a
 stream, with a 100k/64 MiB gate, and no-book freshness remains unknown.
+The last containment pass removes typed-only subscription fallback, requires a
+complete raw channel acknowledgment for each connection, rejects manifest path
+escapes and symlink escapes, validates a complete segment-file inventory, and
+fails closed on partially created rotation successors.
 
 ## D2D evidence classification, durability, and performance
 

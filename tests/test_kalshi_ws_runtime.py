@@ -672,7 +672,7 @@ def test_runtime_preserves_unknown_sequence_and_excluded_delta(tmp_path: Path) -
         blocker_code=None,
     )
 
-    assert summary["raw_event_count"] == 1
+    assert summary["raw_event_count"] == 2
     assert summary["rebuild_frame_count"] == 0
     assert summary["rebuild_excluded_count"] == 1
     assert summary["independent_evidence_classifications"]["sequence_integrity"] == "UNKNOWN"
@@ -1192,7 +1192,7 @@ def test_freshness_maximum_includes_start_to_first_observation(tmp_path: Path) -
 
 def test_validator_rejects_event_before_connection_subscription_ack(tmp_path: Path) -> None:
     session = _session_without_connection(tmp_path, configured_duration_seconds=1)
-    tracker = _tracker()
+    tracker = _tracker(offset=False)
     session.record_connection_event(
         ConnectionEvidenceEvent(
             event_type=ConnectionEvidenceType.CONNECTION_OPEN,
@@ -1231,7 +1231,7 @@ def test_validator_rejects_ack_not_grounded_in_all_durable_channel_frames(
     tmp_path: Path,
 ) -> None:
     session = _session_without_connection(tmp_path, configured_duration_seconds=1)
-    tracker = _tracker()
+    tracker = _tracker(offset=False)
     session.record_connection_event(
         ConnectionEvidenceEvent(
             event_type=ConnectionEvidenceType.CONNECTION_OPEN,
@@ -1260,6 +1260,61 @@ def test_validator_rejects_ack_not_grounded_in_all_durable_channel_frames(
             connection_id=tracker.connection_id,
             segment_id=tracker.segment_id,
             reason="incorrect_combined_ack",
+        )
+    )
+    session.close(
+        ended_at_utc=START + timedelta(seconds=1),
+        terminal_reason="bounded_duration_complete",
+        stop_requested=False,
+        connection_established=True,
+        subscription_acknowledged=True,
+        blocker_code=None,
+    )
+
+    validation = validate_d2_runtime_artifacts(tmp_path)
+    assert validation["status"] == "fail"
+    assert any(
+        "runtime terminal contradicts derived evidence" in item
+        for item in validation["failures"]
+    )
+
+
+def test_validator_rejects_data_connection_with_no_raw_ack_frame(tmp_path: Path) -> None:
+    session = _session_without_connection(tmp_path, configured_duration_seconds=1)
+    tracker = _tracker(offset=False)
+    session.record_connection_event(
+        ConnectionEvidenceEvent(
+            event_type=ConnectionEvidenceType.CONNECTION_OPEN,
+            observed_at_utc=START,
+            connection_id=tracker.connection_id,
+            segment_id="d2e-runtime-test:segment:0001",
+            reason="missing_raw_ack_connection",
+        )
+    )
+    session.record_connection_event(
+        ConnectionEvidenceEvent(
+            event_type=ConnectionEvidenceType.SUBSCRIPTION_ACKNOWLEDGED,
+            observed_at_utc=START,
+            connection_id=tracker.connection_id,
+            segment_id=tracker.segment_id,
+            reason="ungrounded_typed_ack",
+        )
+    )
+    session.record_event(
+        tracker.record(
+            {
+                "type": "orderbook_snapshot",
+                "sid": 11,
+                "seq": 1,
+                "msg": {
+                    "market_ticker": MARKET,
+                    "yes_dollars_fp": [["0.42", "1"]],
+                    "no_dollars_fp": [],
+                },
+            },
+            local_row_index=1,
+            received_at_utc=START,
+            received_monotonic_ns=1,
         )
     )
     session.close(
@@ -1392,6 +1447,72 @@ def test_validator_rejects_private_account_fields_in_runtime_metadata(tmp_path: 
     validation = validate_d2_runtime_artifacts(tmp_path)
     assert validation["status"] == "fail"
     assert any("private account/order data" in failure for failure in validation["failures"])
+
+
+@pytest.mark.parametrize("escaped_path", ["../outside.events.jsonl", "/tmp/outside.jsonl"])
+def test_validator_rejects_segment_paths_outside_runtime_root(
+    tmp_path: Path,
+    escaped_path: str,
+) -> None:
+    session = _session(tmp_path, configured_duration_seconds=1)
+    session.close(
+        ended_at_utc=START + timedelta(seconds=1),
+        terminal_reason="bounded_duration_complete",
+        stop_requested=False,
+        connection_established=True,
+        subscription_acknowledged=True,
+        blocker_code=None,
+    )
+    summary_path = tmp_path / "campaign_summary.json"
+    summary = json.loads(summary_path.read_text())
+    summary["segment_summaries"][0]["data_path"] = escaped_path
+    summary_path.write_text(json.dumps(summary), encoding="utf-8")
+
+    validation = validate_d2_runtime_artifacts(tmp_path)
+    assert validation["status"] == "fail"
+    assert any("artifact path" in item for item in validation["failures"])
+
+
+def test_validator_rejects_unlisted_segment_artifact(tmp_path: Path) -> None:
+    session = _session(tmp_path, configured_duration_seconds=1)
+    session.close(
+        ended_at_utc=START + timedelta(seconds=1),
+        terminal_reason="bounded_duration_complete",
+        stop_requested=False,
+        connection_established=True,
+        subscription_acknowledged=True,
+        blocker_code=None,
+    )
+    orphan = tmp_path / "evidence_segments" / "orphan.events.jsonl"
+    orphan.write_text('{"unlisted":true}\n', encoding="utf-8")
+
+    validation = validate_d2_runtime_artifacts(tmp_path)
+    assert validation["status"] == "fail"
+    assert any("unlisted files" in item for item in validation["failures"])
+
+
+def test_validator_rejects_segment_symlink_escape(tmp_path: Path) -> None:
+    session = _session(tmp_path, configured_duration_seconds=1)
+    session.close(
+        ended_at_utc=START + timedelta(seconds=1),
+        terminal_reason="bounded_duration_complete",
+        stop_requested=False,
+        connection_established=True,
+        subscription_acknowledged=True,
+        blocker_code=None,
+    )
+    outside = tmp_path.parent / f"{tmp_path.name}-outside.jsonl"
+    outside.write_text("outside\n", encoding="utf-8")
+    symlink = tmp_path / "evidence_segments" / "escape.events.jsonl"
+    symlink.symlink_to(outside)
+    summary_path = tmp_path / "campaign_summary.json"
+    summary = json.loads(summary_path.read_text())
+    summary["segment_summaries"][0]["data_path"] = str(symlink.relative_to(tmp_path))
+    summary_path.write_text(json.dumps(summary), encoding="utf-8")
+
+    validation = validate_d2_runtime_artifacts(tmp_path)
+    assert validation["status"] == "fail"
+    assert any("escapes the runtime root" in item for item in validation["failures"])
 
 
 def test_validator_binds_market_selection_to_durable_launch_record(tmp_path: Path) -> None:
@@ -1640,22 +1761,50 @@ def test_runtime_validation_accumulator_is_bounded_at_100k_events() -> None:
                 "use_yes_price": False,
             },
         }
-        for event_type, segment_id in (
-            (ConnectionEvidenceType.CONNECTION_OPEN, opening_segment),
-            (ConnectionEvidenceType.SUBSCRIPTION_ACKNOWLEDGED, subscription_segment),
-        ):
-            yield {
-                "record_type": "connection_evidence",
-                "campaign_id": campaign_id,
-                "connection_event": ConnectionEvidenceEvent(
-                    event_type=event_type,
-                    observed_at_utc=START,
-                    connection_id=tracker.connection_id,
-                    segment_id=segment_id,
-                    reason="synthetic_100k_validation",
-                ).to_record(),
-            }
-        for index in range(1, 100_001):
+        yield {
+            "record_type": "connection_evidence",
+            "campaign_id": campaign_id,
+            "connection_event": ConnectionEvidenceEvent(
+                event_type=ConnectionEvidenceType.CONNECTION_OPEN,
+                observed_at_utc=START,
+                connection_id=tracker.connection_id,
+                segment_id=opening_segment,
+                reason="synthetic_100k_validation",
+            ).to_record(),
+        }
+        raw_ack = tracker.record(
+            {
+                "type": "subscribed",
+                "id": 1,
+                "msg": {"channels": ["orderbook_delta", "trade"]},
+            },
+            local_row_index=1,
+            received_at_utc=START,
+            received_monotonic_ns=1,
+        )
+        yield {
+            "record_type": "raw_transport_event",
+            "campaign_id": campaign_id,
+            "d2a_event": raw_ack.to_record(),
+            "d2b_rebuild": {
+                "disposition": "IGNORED_NON_ORDERBOOK",
+                "reason": None,
+                "frame": None,
+            },
+            "d2c_public_trades": [],
+        }
+        yield {
+            "record_type": "connection_evidence",
+            "campaign_id": campaign_id,
+            "connection_event": ConnectionEvidenceEvent(
+                event_type=ConnectionEvidenceType.SUBSCRIPTION_ACKNOWLEDGED,
+                observed_at_utc=START,
+                connection_id=tracker.connection_id,
+                segment_id=subscription_segment,
+                reason="synthetic_100k_validation",
+            ).to_record(),
+        }
+        for index in range(2, 100_001):
             event = tracker.record(
                 {"type": "heartbeat"},
                 local_row_index=index,
@@ -1731,6 +1880,25 @@ def test_runtime_crash_recovery_removes_only_partial_tail_and_never_restarts(
     assert monitor["run_info"]["health"] == "BLOCKED"
 
 
+def test_runtime_recovery_rejects_path_escape_without_touching_target(tmp_path: Path) -> None:
+    session = _session(tmp_path, configured_duration_seconds=300)
+    session._writer._handle.close()
+    outside = tmp_path.parent / f"{tmp_path.name}-outside.events.jsonl"
+    outside.write_text("outside-must-remain\n", encoding="utf-8")
+    summary_path = tmp_path / "campaign_summary.json"
+    summary = json.loads(summary_path.read_text())
+    summary["segment_summaries"][-1]["data_path"] = f"../{outside.name}"
+    summary_path.write_text(json.dumps(summary), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="escapes the runtime root"):
+        recover_d2_runtime_artifacts(
+            tmp_path,
+            recovered_at_utc=START + timedelta(seconds=1),
+        )
+
+    assert outside.read_text(encoding="utf-8") == "outside-must-remain\n"
+
+
 def test_runtime_recovers_immediate_zero_record_crash(tmp_path: Path) -> None:
     session = RuntimeEvidenceSession(
         output_dir=tmp_path,
@@ -1796,8 +1964,8 @@ def test_runtime_crash_recovery_reconciles_complete_tail_record_counts(
     summary = json.loads((tmp_path / "campaign_summary.json").read_text())
 
     assert recovery["validation_status"] == "pass"
-    assert summary["event_count"] == 1
-    assert summary["raw_event_count"] == 1
+    assert summary["event_count"] == 2
+    assert summary["raw_event_count"] == 2
     assert summary["sequence_summaries"]
     assert summary["rebuild_summaries"]
     assert summary["freshness_dimensions"]["transport_keepalive_status"] == "OBSERVED"
@@ -1983,6 +2151,13 @@ def test_runtime_recovers_finalized_rotation_without_complete_successor(
         )
         successor.touch()
 
+    if partial_successor:
+        with pytest.raises(ValueError, match="partial successor"):
+            recover_d2_runtime_artifacts(
+                tmp_path,
+                recovered_at_utc=START + timedelta(seconds=2),
+            )
+        return
     recovery = recover_d2_runtime_artifacts(
         tmp_path,
         recovered_at_utc=START + timedelta(seconds=2),
@@ -2031,7 +2206,10 @@ def test_validator_rebuilds_d2b_instead_of_trusting_persisted_frame(
             for line in (tmp_path / segment["data_path"]).read_text().splitlines()
         )
     raw_record = next(
-        record for record in records if record["record_type"] == "raw_transport_event"
+        record
+        for record in records
+        if record["record_type"] == "raw_transport_event"
+        and record["d2b_rebuild"]["frame"] is not None
     )
     raw_record["d2b_rebuild"]["frame"]["terminal_state_hash"] = "0" * 64
 
@@ -2229,9 +2407,12 @@ def test_validator_semantically_reconstructs_all_d2c_evidence(tmp_path: Path) ->
     ]
 
     mutations = (
-        lambda rows: next(
-            row for row in rows if row["record_type"] == "raw_transport_event"
-        ).update(d2c_public_trades=[]),
+            lambda rows: next(
+                row
+                for row in rows
+                if row["record_type"] == "raw_transport_event"
+                and row["d2c_public_trades"]
+            ).update(d2c_public_trades=[]),
         lambda rows: next(
             row for row in rows if row["record_type"] == "lifecycle_evidence"
         )["lifecycle_event"].update(market_ticker="OTHER-MARKET"),
@@ -2529,23 +2710,42 @@ def _session(
         max_segment_bytes=max_segment_bytes,
         use_yes_price=use_yes_price,
     )
-    for event_type, reason in (
-        (ConnectionEvidenceType.CONNECTION_OPEN, "test_connection_open"),
-        (
-            ConnectionEvidenceType.SUBSCRIPTION_ACKNOWLEDGED,
-            "test_subscription_acknowledged",
-        ),
-    ):
-        segment_number = 1 if event_type is ConnectionEvidenceType.CONNECTION_OPEN else 2
-        session.record_connection_event(
-            ConnectionEvidenceEvent(
-                event_type=event_type,
-                observed_at_utc=START,
-                connection_id="d2e-runtime-test:connection:0001",
-                segment_id=f"d2e-runtime-test:segment:{segment_number:04d}",
-                reason=reason,
-            )
+    tracker = KalshiWsIntegrityTracker(
+        campaign_id="d2e-runtime-test",
+        requested_market_tickers=(MARKET,),
+    )
+    tracker.start_connection()
+    session.record_connection_event(
+        ConnectionEvidenceEvent(
+            event_type=ConnectionEvidenceType.CONNECTION_OPEN,
+            observed_at_utc=START,
+            connection_id=tracker.connection_id,
+            segment_id=tracker.segment_id,
+            reason="test_connection_open",
         )
+    )
+    tracker.bind_subscription(command_id=1)
+    session.record_event(
+        tracker.record(
+            {
+                "type": "subscribed",
+                "id": 1,
+                "msg": {"channels": ["orderbook_delta", "trade"]},
+            },
+            local_row_index=1,
+            received_at_utc=START,
+            received_monotonic_ns=1,
+        )
+    )
+    session.record_connection_event(
+        ConnectionEvidenceEvent(
+            event_type=ConnectionEvidenceType.SUBSCRIPTION_ACKNOWLEDGED,
+            observed_at_utc=START,
+            connection_id=tracker.connection_id,
+            segment_id=tracker.segment_id,
+            reason="test_subscription_acknowledged",
+        )
+    )
     return session
 
 
@@ -2586,7 +2786,8 @@ def _tracker(
     *,
     markets: tuple[str, ...] = (MARKET,),
     continuity_policy: SequenceContinuityPolicy = SequenceContinuityPolicy.UNKNOWN,
-) -> KalshiWsIntegrityTracker:
+    offset: bool = True,
+):
     tracker = KalshiWsIntegrityTracker(
         campaign_id="d2e-runtime-test",
         requested_market_tickers=markets,
@@ -2594,7 +2795,22 @@ def _tracker(
     )
     tracker.start_connection()
     tracker.bind_subscription(command_id=1)
-    return tracker
+    return _OffsetTracker(tracker) if offset else tracker
+
+
+class _OffsetTracker:
+    def __init__(self, tracker: KalshiWsIntegrityTracker) -> None:
+        self._tracker = tracker
+
+    def __getattr__(self, name: str):
+        return getattr(self._tracker, name)
+
+    def record(self, payload, *, local_row_index: int, **kwargs):
+        return self._tracker.record(
+            payload,
+            local_row_index=local_row_index + 1,
+            **kwargs,
+        )
 
 
 class _FakeTime:
