@@ -11,6 +11,7 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Literal
 
+from edmn_trader.data.evidence_policy import V2_THRESHOLD_POLICY
 from edmn_trader.execution.private_live_gate import attempt_private_live_execution
 
 MonitorFormat = Literal["json", "markdown", "table"]
@@ -71,6 +72,7 @@ def build_monitor_snapshot(input_dir: Path, *, now: datetime | None = None) -> d
         risk=risk,
         reconciliation=reconciliation,
         data_status=data_status,
+        campaign_snapshot=campaign,
     )
 
     return {
@@ -581,7 +583,9 @@ def _campaign_status(
     summaries: Mapping[str, Mapping[str, object]],
     generated_at: datetime,
 ) -> dict[str, object]:
-    campaign = summaries.get("campaign_summary.json", {})
+    campaign = _refresh_running_freshness(
+        summaries.get("campaign_summary.json", {}), generated_at
+    )
     validation = summaries.get("campaign_validation.json", {})
     source_type = campaign.get("source_type") or validation.get("source_type")
     event_count = campaign.get("event_count") or validation.get("event_count") or 0
@@ -681,6 +685,52 @@ def _campaign_status(
     }
 
 
+def _refresh_running_freshness(
+    source: Mapping[str, object],
+    generated_at: datetime,
+) -> dict[str, object]:
+    campaign = dict(source)
+    if campaign.get("status") != "d2_runtime_running":
+        return campaign
+    raw = campaign.get("freshness_dimensions")
+    if not isinstance(raw, Mapping):
+        return campaign
+    freshness = dict(raw)
+    elapsed = _staleness_seconds(freshness.get("evaluated_at_utc"), generated_at)
+    if elapsed is not None:
+        for field in (
+            "transport_keepalive_age_seconds",
+            "lifecycle_observation_age_seconds",
+            "orderbook_event_quiet_interval_seconds",
+        ):
+            age = freshness.get(field)
+            if isinstance(age, int | float) and not isinstance(age, bool):
+                freshness[field] = int(age) + elapsed
+    campaign["freshness_dimensions"] = freshness
+    dimensions = campaign.get("independent_evidence_classifications")
+    if isinstance(dimensions, Mapping):
+        refreshed_dimensions = dict(dimensions)
+        keepalive_age = freshness.get("transport_keepalive_age_seconds")
+        if isinstance(keepalive_age, int | float) and keepalive_age > (
+            V2_THRESHOLD_POLICY.maximum_transport_keepalive_age_seconds
+        ):
+            refreshed_dimensions["transport_keepalive"] = "FAIL"
+        lifecycle_age = freshness.get("lifecycle_observation_age_seconds")
+        if isinstance(lifecycle_age, int | float) and lifecycle_age > (
+            V2_THRESHOLD_POLICY.maximum_lifecycle_age_seconds
+        ):
+            refreshed_dimensions["market_lifecycle_validity"] = "FAIL"
+        campaign["independent_evidence_classifications"] = refreshed_dimensions
+    orderbook_age = freshness.get("orderbook_event_quiet_interval_seconds")
+    if isinstance(orderbook_age, int | float):
+        campaign["websocket_message_freshness_status"] = (
+            "QUIET_WARNING"
+            if orderbook_age > V2_THRESHOLD_POLICY.orderbook_quiet_warning_seconds
+            else "FRESH"
+        )
+    return campaign
+
+
 def _campaign_monitor_status(
     campaign: Mapping[str, object],
     validation: Mapping[str, object],
@@ -704,6 +754,8 @@ def _campaign_monitor_status(
                 "subscription_status",
                 "rebuild_integrity",
                 "market_lifecycle_validity",
+                "transport_keepalive",
+                "sequence_integrity",
                 "duration_evidence",
                 "process_liveness",
             )
@@ -834,6 +886,7 @@ def _health(
     risk: Mapping[str, object],
     reconciliation: Mapping[str, object],
     data_status: Mapping[str, object],
+    campaign_snapshot: Mapping[str, object] | None = None,
 ) -> str:
     if not input_dir.exists():
         warnings.append("NO_DATA: input directory does not exist")
@@ -841,7 +894,7 @@ def _health(
     if not records and not summaries:
         warnings.append("NO_DATA: no monitor artifacts found")
         return "NO_DATA"
-    campaign = summaries.get("campaign_summary.json", {})
+    campaign = campaign_snapshot or summaries.get("campaign_summary.json", {})
     if campaign.get("runtime_schema_version") == "edmn.kalshi.ws.runtime.v2":
         validation = summaries.get("campaign_validation.json", {})
         if validation.get("status") in {"fail", "blocked"}:

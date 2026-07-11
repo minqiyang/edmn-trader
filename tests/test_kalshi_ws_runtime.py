@@ -2122,6 +2122,34 @@ def test_running_monitor_does_not_pass_stale_keepalive_on_lifecycle_write(
     assert monitor["campaign"]["status"] == "D2_RUNTIME_EVIDENCE_FAILED"
     assert monitor["run_info"]["health"] == "BLOCKED"
 
+    stalled_monitor = build_monitor_snapshot(tmp_path, now=START + timedelta(seconds=1_000))
+    assert stalled_monitor["campaign"]["freshness_dimensions"][
+        "transport_keepalive_age_seconds"
+    ] == 999
+    assert stalled_monitor["campaign"]["status"] == "D2_RUNTIME_EVIDENCE_FAILED"
+    assert stalled_monitor["run_info"]["health"] == "BLOCKED"
+
+
+def test_validator_rejects_segment_root_symlink(tmp_path: Path) -> None:
+    session = _session(tmp_path, configured_duration_seconds=1)
+    session.close(
+        ended_at_utc=START + timedelta(seconds=1),
+        terminal_reason="bounded_duration_complete",
+        stop_requested=False,
+        connection_established=True,
+        subscription_acknowledged=True,
+        blocker_code=None,
+    )
+    evidence_root = tmp_path / "evidence_segments"
+    real_root = tmp_path / "real_segments"
+    evidence_root.rename(real_root)
+    evidence_root.symlink_to(real_root, target_is_directory=True)
+
+    validation = validate_d2_runtime_artifacts(tmp_path)
+
+    assert validation["status"] == "fail"
+    assert any("unlisted files" in item for item in validation["failures"])
+
 
 def test_runtime_recovery_rejects_path_escape_without_touching_target(tmp_path: Path) -> None:
     session = _session(tmp_path, configured_duration_seconds=300)
@@ -2156,6 +2184,66 @@ def test_runtime_recovery_accepts_runtime_root_symlink(tmp_path: Path) -> None:
 
     assert recovery["validation_status"] == "pass"
     assert (actual / "campaign_validation.json").is_file()
+
+
+def test_runtime_recovery_rejects_dangling_partial_successor_before_mutation(
+    tmp_path: Path,
+) -> None:
+    session = RuntimeEvidenceSession(
+        output_dir=tmp_path,
+        campaign_id="d2e-dangling-successor",
+        mode="read_only_websocket_smoke",
+        configured_duration_seconds=300,
+        selected_market_metadata={"ticker": MARKET, "status": "active"},
+        selected_market_selection={"selection_gate_result": "pass"},
+        lifecycle_mode_and_source="selected_market_rest_fallback",
+        pricing_mode_and_source="explicit",
+        provenance=RuntimeCodeProvenance(COMMIT, "main", "https://example.test/repo", False),
+        started_at_utc=START,
+    )
+    session._writer.close(
+        terminal_reason="rotation",
+        rotation_reason=RotationReason.BYTE_LIMIT,
+    )
+    successor = tmp_path / "evidence_segments" / (
+        "d2e-dangling-successor.evidence.0002.summary.json"
+    )
+    successor.symlink_to(tmp_path / "missing-summary.json")
+
+    with pytest.raises(ValueError, match="partial successor"):
+        recover_d2_runtime_artifacts(
+            tmp_path,
+            recovered_at_utc=START + timedelta(seconds=2),
+        )
+    assert not (tmp_path / "runtime_recovery.json").exists()
+
+
+@pytest.mark.parametrize("missing_artifact", ["start", "recovery"])
+def test_validator_requires_untampered_recovery_metadata(
+    tmp_path: Path,
+    missing_artifact: str,
+) -> None:
+    session = _session(tmp_path, configured_duration_seconds=300)
+    session._writer._handle.close()
+    recovery = recover_d2_runtime_artifacts(
+        tmp_path,
+        recovered_at_utc=START + timedelta(seconds=10),
+    )
+    assert recovery["validation_status"] == "pass"
+    if missing_artifact == "start":
+        summary = json.loads((tmp_path / "campaign_summary.json").read_text())
+        recovered_segment = next(
+            segment
+            for segment in summary["segment_summaries"]
+            if segment.get("recovery_status") == "CRASH_RECOVERED"
+        )
+        (tmp_path / recovered_segment["next_segment_metadata_path"]).unlink()
+    else:
+        (tmp_path / "runtime_recovery.json").unlink()
+
+    validation = validate_d2_runtime_artifacts(tmp_path)
+    assert validation["status"] == "fail"
+    assert any("runtime recovery metadata" in item for item in validation["failures"])
 
 
 def test_runtime_recovers_immediate_zero_record_crash(tmp_path: Path) -> None:

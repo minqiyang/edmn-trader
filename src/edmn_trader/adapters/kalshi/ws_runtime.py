@@ -1497,6 +1497,11 @@ def validate_d2_runtime_artifacts(input_dir: Path) -> dict[str, object]:
             checkpoint_path = _contained_artifact_path(root, segment["checkpoint_path"])
             segment_summary_path = _contained_artifact_path(root, segment["summary_path"])
             listed_segment_paths.update(relative_paths)
+            next_metadata = segment.get("next_segment_metadata_path")
+            if next_metadata is not None:
+                next_metadata_relative = Path(str(next_metadata))
+                _contained_artifact_path(root, next_metadata)
+                listed_segment_paths.add(next_metadata_relative)
             segment_id = str(segment["segment_id"])
             verified = verify_segment_chain(data_path, segment_id=segment_id)
             checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
@@ -1550,12 +1555,90 @@ def validate_d2_runtime_artifacts(input_dir: Path) -> dict[str, object]:
     evidence_root = root / "evidence_segments"
     actual_segment_paths = {
         path.relative_to(root)
-        for pattern in ("*.events.jsonl", "*.checkpoint.json", "*.summary.json")
+        for pattern in (
+            "*.events.jsonl",
+            "*.checkpoint.json",
+            "*.summary.json",
+            "*.start.json",
+        )
         for path in evidence_root.rglob(pattern)
     }
-    has_symlink = any(path.is_symlink() for path in evidence_root.rglob("*"))
+    has_symlink = evidence_root.is_symlink() or any(
+        path.is_symlink() for path in evidence_root.rglob("*")
+    )
     if actual_segment_paths != listed_segment_paths or has_symlink:
         failures.append("segment artifact inventory contains missing or unlisted files")
+    if summary.get("status") == "d2_runtime_crash_recovered":
+        recovery_path = root / "runtime_recovery.json"
+        try:
+            recovery = json.loads(recovery_path.read_text(encoding="utf-8"))
+            validate_no_secret_payload(recovery)
+            if not isinstance(recovery, Mapping):
+                raise ValueError("runtime recovery metadata must be an object")
+            recovery_segment = next(
+                (
+                    segment
+                    for segment in segments
+                    if isinstance(segment, Mapping)
+                    and segment.get("segment_id") == recovery.get("segment_id")
+                ),
+                None,
+            )
+            if recovery_segment is None:
+                raise ValueError("runtime recovery segment is not in the manifest")
+            expected_recovery = {
+                "runtime_schema_version": summary.get("runtime_schema_version"),
+                "campaign_id": summary.get("campaign_id"),
+                "segment_id": recovery_segment.get("segment_id"),
+                "terminal_reason": "crash_recovered",
+                "last_committed_local_row_index": recovery_segment.get(
+                    "last_committed_local_row_index"
+                ),
+                "terminal_chain_hash": recovery_segment.get("terminal_chain_hash"),
+                "closed_file_sha256": recovery_segment.get("closed_file_sha256"),
+                "partial_tail_bytes_removed": recovery_segment.get(
+                    "partial_tail_bytes_removed"
+                ),
+                "next_segment_metadata_path": recovery_segment.get(
+                    "next_segment_metadata_path"
+                ),
+                "snapshot_required": recovery_segment.get(
+                    "snapshot_required_after_recovery"
+                ),
+                "inherited_book_state": recovery_segment.get("inherited_book_state"),
+            }
+            expected_next_segment_id = (
+                f"{summary['campaign_id']}.recovery.next"
+            )
+            expected_recovery["next_segment_id"] = expected_next_segment_id
+            expected_recovery["next_segment_metadata_path"] = (
+                f"evidence_segments/{expected_next_segment_id}.start.json"
+            )
+            for field, expected in expected_recovery.items():
+                if recovery.get(field) != expected:
+                    raise ValueError(f"runtime recovery metadata mismatch: {field}")
+            metadata_path = _contained_artifact_path(
+                root, recovery["next_segment_metadata_path"]
+            )
+            start = json.loads(metadata_path.read_text(encoding="utf-8"))
+            expected_start = {
+                "schema_version": EVIDENCE_SEGMENT_START_SCHEMA_VERSION,
+                "segment_id": recovery["next_segment_id"],
+                "previous_segment_id": recovery["segment_id"],
+                "segment_created": True,
+                "connection_reset_required": True,
+                "snapshot_required": True,
+                "inherited_book_state": False,
+            }
+            if not isinstance(start, Mapping) or set(start) != {
+                *expected_start,
+                "created_at_utc",
+            } or any(
+                start.get(field) != value for field, value in expected_start.items()
+            ) or _parse_time(start.get("created_at_utc")) is None:
+                raise ValueError("runtime recovery segment-start metadata mismatch")
+        except (KeyError, OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            failures.append(f"runtime recovery metadata verification failed: {exc}")
     for sibling_name in ("campaign_manifest.json", "run_metadata.json"):
         try:
             sibling = json.loads((root / sibling_name).read_text(encoding="utf-8"))
@@ -2827,9 +2910,11 @@ def recover_d2_runtime_artifacts(
         next_data_path = data_path.with_name(f"{next_segment_id}.events.jsonl")
         next_checkpoint_path = data_path.with_name(f"{next_segment_id}.checkpoint.json")
         next_summary_path = data_path.with_name(f"{next_segment_id}.summary.json")
-        successor_data_exists = next_data_path.exists()
-        successor_checkpoint_exists = next_checkpoint_path.exists()
-        successor_summary_exists = next_summary_path.exists()
+        successor_data_exists = next_data_path.exists() or next_data_path.is_symlink()
+        successor_checkpoint_exists = (
+            next_checkpoint_path.exists() or next_checkpoint_path.is_symlink()
+        )
+        successor_summary_exists = next_summary_path.exists() or next_summary_path.is_symlink()
         successor_exists = (
             successor_data_exists
             or successor_checkpoint_exists
@@ -3022,6 +3107,7 @@ def recover_d2_runtime_artifacts(
         "automatic_restart": False,
         "replay_qualified": False,
     }
+    _atomic_write_json(root / "runtime_recovery.json", recovery)
     _sync_runtime_summary(root, summary)
     first_validation = validate_d2_runtime_artifacts(root)
     summary["independent_evidence_classifications"] = {
