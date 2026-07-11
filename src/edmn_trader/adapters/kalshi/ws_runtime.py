@@ -170,7 +170,7 @@ def _require_empty_runtime_root(root: Path) -> None:
 
 def _contained_artifact_path(root: Path, value: object) -> Path:
     relative = Path(str(value))
-    if relative.is_absolute():
+    if relative.is_absolute() or ".." in relative.parts:
         raise ValueError("artifact path must be relative to the runtime root")
     resolved_root = root.resolve()
     candidate = (resolved_root / relative).resolve(strict=False)
@@ -500,6 +500,7 @@ class RuntimeEvidenceSession:
         self._latest_lifecycle_record: dict[str, object] | None = None
         self._lifecycle_invalid_observed = False
         self._raw_counts: Counter[str] = Counter()
+        self._durable_ack_channels: dict[str, set[str]] = {}
         self._admitted_selected_orderbook_counts: Counter[str] = Counter()
         self._raw_event_count = 0
         self._public_trade_count = 0
@@ -639,6 +640,13 @@ class RuntimeEvidenceSession:
         trade_records = trade_stream.to_records()
         self._raw_event_count += 1
         self._raw_counts[event.native_type or "unknown"] += 1
+        if event.native_type in {"subscribed", "ack", "ok", "error", "rejected"}:
+            self._durable_ack_channels.setdefault(event.connection_id, set()).update(
+                subscription_ack_channels(
+                    event.original_payload,
+                    event.native_type or "unknown",
+                )
+            )
         self._public_trade_count += len(trade_records)
         self._last_event_at = event.received_at_utc
         selected_orderbook_event = (
@@ -941,6 +949,79 @@ class RuntimeEvidenceSession:
 
     def _write_open_status(self, observed_at_utc: datetime) -> None:
         actual = _decimal_seconds(observed_at_utc - self.started_at_utc)
+        connection_windows = self._connection_window_records(observed_at_utc)
+        opened_ids = {
+            str(event["connection_id"])
+            for event in self._connection_events
+            if event.get("event_type")
+            in {ConnectionEvidenceType.CONNECTION_OPEN, ConnectionEvidenceType.RECONNECT}
+        }
+        acknowledged_ids = {
+            str(event["connection_id"])
+            for event in self._connection_events
+            if event.get("event_type") == ConnectionEvidenceType.SUBSCRIPTION_ACKNOWLEDGED
+        }
+        durable_acknowledged_ids = {
+            connection_id
+            for connection_id, channels in self._durable_ack_channels.items()
+            if REQUIRED_PUBLIC_CHANNELS <= channels
+        }
+        connection_established = bool(opened_ids)
+        subscription_rejected = any(
+            event.get("event_type") == ConnectionEvidenceType.SUBSCRIPTION_REJECTED
+            for event in self._connection_events
+        )
+        subscription_acknowledged = bool(
+            opened_ids
+            and opened_ids <= acknowledged_ids & durable_acknowledged_ids
+            and not subscription_rejected
+        )
+        connected = self._connected_seconds(observed_at_utc, connection_established)
+        disconnect_durations = self._disconnect_durations(
+            connection_windows,
+            started_at_utc=self.started_at_utc,
+            ended_at_utc=observed_at_utc,
+        )
+        maximum_disconnect = max(
+            (Decimal(value) for value in disconnect_durations),
+            default=Decimal("0"),
+        )
+        coverage = connected / actual if actual else Decimal("0")
+        freshness = evaluate_evidence_freshness(
+            evaluated_at_utc=observed_at_utc,
+            transport_keepalive_observed_at_utc=self._last_keepalive_at,
+            transport_keepalive_source=(
+                "RECORDED_WS_HEARTBEAT_OR_PONG" if self._last_keepalive_at else None
+            ),
+            lifecycle_observed_at_utc=self._last_lifecycle_at,
+            orderbook_event_at_utc=self._last_orderbook_event_at,
+        )
+        dimensions = {
+            field: EvidenceStatus.UNKNOWN for field in EvidenceDimensions.__dataclass_fields__
+        }
+        if connection_established and actual:
+            dimensions["transport_connectivity"] = (
+                EvidenceStatus.PASS
+                if coverage >= self.threshold_policy.minimum_connection_coverage
+                and maximum_disconnect
+                <= self.threshold_policy.maximum_disconnect_seconds
+                else EvidenceStatus.FAIL
+            )
+        if opened_ids:
+            dimensions["subscription_status"] = (
+                EvidenceStatus.FAIL
+                if subscription_rejected
+                else EvidenceStatus.PASS
+                if subscription_acknowledged
+                else EvidenceStatus.UNKNOWN
+            )
+        if self._last_keepalive_at is not None:
+            dimensions["transport_keepalive"] = (
+                EvidenceStatus.PASS
+                if (self._max_keepalive_age or 0)
+                <= self.threshold_policy.maximum_transport_keepalive_age_seconds
+                else EvidenceStatus.FAIL
+            )
         summary = {
             "runtime_schema_version": D2_RUNTIME_SCHEMA_VERSION,
             "schema_version": D2_RUNTIME_SCHEMA_VERSION,
@@ -955,7 +1036,7 @@ class RuntimeEvidenceSession:
             "configured_duration_seconds": self.configured_duration_seconds,
             "duration_seconds": self.configured_duration_seconds,
             "actual_elapsed_seconds": _decimal_text(actual),
-            "connected_elapsed_seconds": None,
+            "connected_elapsed_seconds": _decimal_text(connected),
             "started_at_utc": self.started_at_utc.isoformat(),
             "started_at": self.started_at_utc.isoformat(),
             "ended_at": None,
@@ -974,8 +1055,9 @@ class RuntimeEvidenceSession:
             "lifecycle_mode_and_source": self.lifecycle_mode_and_source,
             "pricing_mode_and_source": self.pricing_mode_and_source,
             "use_yes_price": self.use_yes_price,
-            "connection_windows": self._connection_window_records(),
-            "disconnect_durations": [],
+            "connection_windows": connection_windows,
+            "disconnect_durations": disconnect_durations,
+            "connection_coverage": _decimal_text(coverage),
             "segment_summaries": [
                 *self._closed_segment_summaries,
                 {
@@ -988,23 +1070,12 @@ class RuntimeEvidenceSession:
             ],
             "sequence_summaries": self._sequence_summary_records(),
             "rebuild_summaries": self._rebuild_summary_records(),
-            "freshness_dimensions": {
-                "transport_keepalive_status": (
-                    KeepaliveStatus.OBSERVED
-                    if self._last_keepalive_at
-                    else KeepaliveStatus.UNKNOWN_NOT_OBSERVED
-                ),
-                "transport_keepalive_age_seconds": None,
-                "lifecycle_observation_age_seconds": None,
-                "orderbook_event_quiet_interval_seconds": None,
-            },
+            "freshness_dimensions": freshness.to_record(),
             "artifact_integrity_summary": {
                 "integrity_scope": "CHECKPOINT_BOUNDED",
                 "closed_file_hash_verified": None,
             },
-            "independent_evidence_classifications": {
-                field: EvidenceStatus.UNKNOWN for field in EvidenceDimensions.__dataclass_fields__
-            },
+            "independent_evidence_classifications": dimensions,
             "overall_evidence_classification": "INCOMPLETE",
             "event_count": self._raw_event_count,
             "snapshot_count": self._raw_counts["orderbook_snapshot"],
@@ -1022,6 +1093,12 @@ class RuntimeEvidenceSession:
                 for summary in self._sequence.values()
             ),
             "last_event_time": self._last_event_at.isoformat() if self._last_event_at else None,
+            "websocket_message_freshness_status": _orderbook_freshness_status(
+                freshness.orderbook_event_quiet_interval_seconds
+            ),
+            "exchange_heartbeat_status": freshness.transport_keepalive_status,
+            "connection_established": connection_established,
+            "subscription_acknowledged": subscription_acknowledged,
             "status": "d2_runtime_running",
             "source_type": _source_type(self._raw_counts),
             "live_gate_status": "disabled",
@@ -1210,7 +1287,7 @@ class RuntimeEvidenceSession:
         ended_at_utc: datetime,
         connection_established: bool,
     ) -> Decimal:
-        windows = self._connection_window_records()
+        windows = self._connection_window_records(ended_at_utc)
         if not windows:
             return (
                 _decimal_seconds(ended_at_utc - self.started_at_utc)
@@ -1222,11 +1299,14 @@ class RuntimeEvidenceSession:
             Decimal("0"),
         )
 
-    def _connection_window_records(self) -> list[dict[str, object]]:
+    def _connection_window_records(
+        self,
+        open_through_utc: datetime | None = None,
+    ) -> list[dict[str, object]]:
         records = []
         for window in self._connection_windows.values():
             opened = _parse_time(window["opened_at_utc"])
-            closed = _parse_time(window["closed_at_utc"])
+            closed = _parse_time(window["closed_at_utc"]) or open_through_utc
             duration = _decimal_seconds(closed - opened) if opened and closed else Decimal("0")
             records.append({**window, "duration_seconds": _decimal_text(duration)})
         return records
@@ -1338,7 +1418,7 @@ class RuntimeEvidenceSession:
 
 
 def validate_d2_runtime_artifacts(input_dir: Path) -> dict[str, object]:
-    root = Path(input_dir)
+    root = Path(input_dir).resolve()
     failures: list[str] = []
     try:
         summary = json.loads((root / "campaign_summary.json").read_text(encoding="utf-8"))
@@ -1388,12 +1468,14 @@ def validate_d2_runtime_artifacts(input_dir: Path) -> dict[str, object]:
     listed_segment_paths: set[Path] = set()
     for segment in segments:
         try:
+            relative_paths = tuple(
+                Path(str(segment[field]))
+                for field in ("data_path", "checkpoint_path", "summary_path")
+            )
             data_path = _contained_artifact_path(root, segment["data_path"])
             checkpoint_path = _contained_artifact_path(root, segment["checkpoint_path"])
             segment_summary_path = _contained_artifact_path(root, segment["summary_path"])
-            listed_segment_paths.update(
-                (data_path, checkpoint_path, segment_summary_path)
-            )
+            listed_segment_paths.update(relative_paths)
             segment_id = str(segment["segment_id"])
             verified = verify_segment_chain(data_path, segment_id=segment_id)
             checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
@@ -1446,9 +1528,9 @@ def validate_d2_runtime_artifacts(input_dir: Path) -> dict[str, object]:
             failures.append(f"segment verification failed: {exc}")
     evidence_root = root / "evidence_segments"
     actual_segment_paths = {
-        path.resolve()
+        path.relative_to(root)
         for pattern in ("*.events.jsonl", "*.checkpoint.json", "*.summary.json")
-        for path in evidence_root.glob(pattern)
+        for path in evidence_root.rglob(pattern)
     }
     if actual_segment_paths != listed_segment_paths:
         failures.append("segment artifact inventory contains missing or unlisted files")
@@ -1883,6 +1965,15 @@ def _derive_runtime_validation(
                 and observed_at < last_connection_observed_at
             ):
                 raise ValueError("connection evidence chronology moves backwards")
+            if (
+                connection.event_type
+                is ConnectionEvidenceType.SUBSCRIPTION_ACKNOWLEDGED
+                and not REQUIRED_PUBLIC_CHANNELS
+                <= durable_ack_channels.get(connection.connection_id, set())
+            ):
+                raise ValueError(
+                    "typed subscription acknowledgment precedes durable raw channels"
+                )
             last_connection_observed_at = observed_at
             _update_validation_connection_state(connection_states, connection)
             connection_events.append(connection_record)
@@ -2673,7 +2764,7 @@ def recover_d2_runtime_artifacts(
     """Close one crashed open D2 segment; never auto-resume the campaign."""
 
     _require_aware(recovered_at_utc, "recovered_at_utc")
-    root = Path(input_dir)
+    root = Path(input_dir).resolve()
     summary_path = root / "campaign_summary.json"
     summary = json.loads(summary_path.read_text(encoding="utf-8"))
     if summary.get("runtime_schema_version") != D2_RUNTIME_SCHEMA_VERSION:
@@ -2713,9 +2804,18 @@ def recover_d2_runtime_artifacts(
         next_segment_id = _next_rotated_segment_id(segment_id)
         next_data_path = data_path.with_name(f"{next_segment_id}.events.jsonl")
         next_checkpoint_path = data_path.with_name(f"{next_segment_id}.checkpoint.json")
+        next_summary_path = data_path.with_name(f"{next_segment_id}.summary.json")
         successor_data_exists = next_data_path.exists()
         successor_checkpoint_exists = next_checkpoint_path.exists()
-        if successor_data_exists != successor_checkpoint_exists:
+        successor_summary_exists = next_summary_path.exists()
+        successor_exists = (
+            successor_data_exists
+            or successor_checkpoint_exists
+            or successor_summary_exists
+        )
+        if successor_exists and not (
+            successor_data_exists and successor_checkpoint_exists
+        ):
             raise ValueError("finalized rotation has a partial successor segment")
         if not successor_data_exists:
             segment = finalized_record

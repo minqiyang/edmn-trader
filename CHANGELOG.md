@@ -42,7 +42,8 @@ numbers while the repository is still in early research scaffolding.
   cannot reset orderbook state, terminal/recovery validation streams under a
   100k memory gate, and missing orderbook freshness remains unknown. Typed-only
   acknowledgments fail, manifest paths are root-contained, segment artifacts
-  are fully inventoried, and partial rotation successors fail closed.
+  are recursively inventoried by path, partial rotation successors fail closed,
+  and running monitor snapshots retain observed connection/freshness evidence.
   Legacy v1 artifacts remain readable but are not selected for new WebSocket
   runs. Tests are mocked and public live trading remains disabled.
 - Added D2D orthogonal evidence classification, timestamp-derived duration,

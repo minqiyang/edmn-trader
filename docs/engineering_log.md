@@ -115,7 +115,9 @@ stream, with a 100k/64 MiB gate, and no-book freshness remains unknown.
 The last containment pass removes typed-only subscription fallback, requires a
 complete raw channel acknowledgment for each connection, rejects manifest path
 escapes and symlink escapes, validates a complete segment-file inventory, and
-fails closed on partially created rotation successors.
+fails closed on partially created rotation successors. The final review pass
+also binds acknowledgment chronology, recursive lexical artifact identity,
+symlink-root recovery, and observed running-monitor transport/freshness state.
 
 ## D2D evidence classification, durability, and performance
 

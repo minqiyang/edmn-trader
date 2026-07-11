@@ -1274,7 +1274,7 @@ def test_validator_rejects_ack_not_grounded_in_all_durable_channel_frames(
     validation = validate_d2_runtime_artifacts(tmp_path)
     assert validation["status"] == "fail"
     assert any(
-        "runtime terminal contradicts derived evidence" in item
+        "typed subscription acknowledgment precedes durable raw channels" in item
         for item in validation["failures"]
     )
 
@@ -1329,7 +1329,57 @@ def test_validator_rejects_data_connection_with_no_raw_ack_frame(tmp_path: Path)
     validation = validate_d2_runtime_artifacts(tmp_path)
     assert validation["status"] == "fail"
     assert any(
-        "runtime terminal contradicts derived evidence" in item
+        "typed subscription acknowledgment precedes durable raw channels" in item
+        for item in validation["failures"]
+    )
+
+
+def test_validator_rejects_typed_ack_before_durable_raw_channels(tmp_path: Path) -> None:
+    session = _session_without_connection(tmp_path, configured_duration_seconds=1)
+    tracker = _tracker(offset=False)
+    session.record_connection_event(
+        ConnectionEvidenceEvent(
+            event_type=ConnectionEvidenceType.CONNECTION_OPEN,
+            observed_at_utc=START,
+            connection_id=tracker.connection_id,
+            segment_id=tracker.segment_id,
+            reason="typed_ack_before_raw_channels",
+        )
+    )
+    session.record_connection_event(
+        ConnectionEvidenceEvent(
+            event_type=ConnectionEvidenceType.SUBSCRIPTION_ACKNOWLEDGED,
+            observed_at_utc=START,
+            connection_id=tracker.connection_id,
+            segment_id=tracker.segment_id,
+            reason="typed_ack_before_raw_channels",
+        )
+    )
+    session.record_event(
+        tracker.record(
+            {
+                "type": "subscribed",
+                "id": 1,
+                "msg": {"channels": ["orderbook_delta", "trade"]},
+            },
+            local_row_index=1,
+            received_at_utc=START,
+            received_monotonic_ns=1,
+        )
+    )
+    session.close(
+        ended_at_utc=START + timedelta(seconds=1),
+        terminal_reason="bounded_duration_complete",
+        stop_requested=False,
+        connection_established=True,
+        subscription_acknowledged=True,
+        blocker_code=None,
+    )
+
+    validation = validate_d2_runtime_artifacts(tmp_path)
+    assert validation["status"] == "fail"
+    assert any(
+        "typed subscription acknowledgment precedes durable raw channels" in item
         for item in validation["failures"]
     )
 
@@ -1360,6 +1410,7 @@ def test_validator_requires_contiguous_d2a_runtime_indices(tmp_path: Path) -> No
 
 def test_validator_rejects_reused_connection_identity(tmp_path: Path) -> None:
     session = _session_without_connection(tmp_path, configured_duration_seconds=2)
+    tracker = _tracker(offset=False)
     for event_type, observed_at, segment_id in (
         (ConnectionEvidenceType.CONNECTION_OPEN, START, "segment-1"),
         (ConnectionEvidenceType.SUBSCRIPTION_ACKNOWLEDGED, START, "segment-2"),
@@ -1375,11 +1426,24 @@ def test_validator_rejects_reused_connection_identity(tmp_path: Path) -> None:
             ConnectionEvidenceEvent(
                 event_type=event_type,
                 observed_at_utc=observed_at,
-                connection_id="reused-connection",
+                connection_id=tracker.connection_id,
                 segment_id=segment_id,
                 reason="reused_connection_test",
             )
         )
+        if event_type is ConnectionEvidenceType.CONNECTION_OPEN:
+            session.record_event(
+                tracker.record(
+                    {
+                        "type": "subscribed",
+                        "id": 1,
+                        "msg": {"channels": ["orderbook_delta", "trade"]},
+                    },
+                    local_row_index=1,
+                    received_at_utc=START,
+                    received_monotonic_ns=1,
+                )
+            )
     session.close(
         ended_at_utc=START + timedelta(seconds=2),
         terminal_reason="bounded_duration_complete",
@@ -1396,20 +1460,33 @@ def test_validator_rejects_reused_connection_identity(tmp_path: Path) -> None:
 
 def test_validator_rejects_connection_outside_terminal_interval(tmp_path: Path) -> None:
     session = _session_without_connection(tmp_path, configured_duration_seconds=1)
+    tracker = _tracker(offset=False)
     session.record_connection_event(
         ConnectionEvidenceEvent(
             event_type=ConnectionEvidenceType.CONNECTION_OPEN,
             observed_at_utc=START - timedelta(seconds=1),
-            connection_id="early-connection",
+            connection_id=tracker.connection_id,
             segment_id="early-segment",
             reason="pre_runtime_connection",
+        )
+    )
+    session.record_event(
+        tracker.record(
+            {
+                "type": "subscribed",
+                "id": 1,
+                "msg": {"channels": ["orderbook_delta", "trade"]},
+            },
+            local_row_index=1,
+            received_at_utc=START,
+            received_monotonic_ns=1,
         )
     )
     session.record_connection_event(
         ConnectionEvidenceEvent(
             event_type=ConnectionEvidenceType.SUBSCRIPTION_ACKNOWLEDGED,
             observed_at_utc=START,
-            connection_id="early-connection",
+            connection_id=tracker.connection_id,
             segment_id="subscription-segment",
             reason="subscription_acknowledged",
         )
@@ -1485,6 +1562,34 @@ def test_validator_rejects_unlisted_segment_artifact(tmp_path: Path) -> None:
     )
     orphan = tmp_path / "evidence_segments" / "orphan.events.jsonl"
     orphan.write_text('{"unlisted":true}\n', encoding="utf-8")
+
+    validation = validate_d2_runtime_artifacts(tmp_path)
+    assert validation["status"] == "fail"
+    assert any("unlisted files" in item for item in validation["failures"])
+
+
+@pytest.mark.parametrize("alias_kind", ["nested", "symlink"])
+def test_validator_rejects_nested_or_alias_segment_artifact(
+    tmp_path: Path,
+    alias_kind: str,
+) -> None:
+    session = _session(tmp_path, configured_duration_seconds=1)
+    summary = session.close(
+        ended_at_utc=START + timedelta(seconds=1),
+        terminal_reason="bounded_duration_complete",
+        stop_requested=False,
+        connection_established=True,
+        subscription_acknowledged=True,
+        blocker_code=None,
+    )
+    evidence_root = tmp_path / "evidence_segments"
+    if alias_kind == "nested":
+        orphan = evidence_root / "nested" / "orphan.events.jsonl"
+        orphan.parent.mkdir()
+        orphan.write_text('{"unlisted":true}\n', encoding="utf-8")
+    else:
+        target = tmp_path / summary["segment_summaries"][0]["data_path"]
+        (evidence_root / "alias.events.jsonl").symlink_to(target)
 
     validation = validate_d2_runtime_artifacts(tmp_path)
     assert validation["status"] == "fail"
@@ -1880,6 +1985,37 @@ def test_runtime_crash_recovery_removes_only_partial_tail_and_never_restarts(
     assert monitor["run_info"]["health"] == "BLOCKED"
 
 
+def test_running_monitor_reports_observed_connection_and_freshness(tmp_path: Path) -> None:
+    session = _session(tmp_path, configured_duration_seconds=300)
+    session.record_event(
+        _tracker().record(
+            {"type": "heartbeat", "sid": 41, "seq": 1},
+            local_row_index=1,
+            received_at_utc=START + timedelta(seconds=60),
+            received_monotonic_ns=1,
+        )
+    )
+
+    monitor = build_monitor_snapshot(tmp_path, now=START + timedelta(seconds=60))
+    campaign = monitor["campaign"]
+
+    assert campaign["status"] == "D2_RUNTIME_RUNNING"
+    assert campaign["connection_established"] is True
+    assert campaign["subscription_acknowledged"] is True
+    assert Decimal(campaign["connected_elapsed_seconds"]) == 60
+    assert campaign["freshness_dimensions"]["transport_keepalive_age_seconds"] == 0
+    assert campaign["exchange_heartbeat_status"] == "OBSERVED"
+    assert campaign["independent_evidence_classifications"][
+        "transport_connectivity"
+    ] == "PASS"
+    assert campaign["independent_evidence_classifications"]["subscription_status"] == (
+        "PASS"
+    )
+    assert campaign["independent_evidence_classifications"]["transport_keepalive"] == (
+        "PASS"
+    )
+
+
 def test_runtime_recovery_rejects_path_escape_without_touching_target(tmp_path: Path) -> None:
     session = _session(tmp_path, configured_duration_seconds=300)
     session._writer._handle.close()
@@ -1890,13 +2026,29 @@ def test_runtime_recovery_rejects_path_escape_without_touching_target(tmp_path: 
     summary["segment_summaries"][-1]["data_path"] = f"../{outside.name}"
     summary_path.write_text(json.dumps(summary), encoding="utf-8")
 
-    with pytest.raises(ValueError, match="escapes the runtime root"):
+    with pytest.raises(ValueError, match="relative to the runtime root"):
         recover_d2_runtime_artifacts(
             tmp_path,
             recovered_at_utc=START + timedelta(seconds=1),
         )
 
     assert outside.read_text(encoding="utf-8") == "outside-must-remain\n"
+
+
+def test_runtime_recovery_accepts_runtime_root_symlink(tmp_path: Path) -> None:
+    actual = tmp_path / "actual"
+    session = _session(actual, configured_duration_seconds=300)
+    session._writer._handle.close()
+    alias = tmp_path / "alias"
+    alias.symlink_to(actual, target_is_directory=True)
+
+    recovery = recover_d2_runtime_artifacts(
+        alias,
+        recovered_at_utc=START + timedelta(seconds=1),
+    )
+
+    assert recovery["validation_status"] == "pass"
+    assert (actual / "campaign_validation.json").is_file()
 
 
 def test_runtime_recovers_immediate_zero_record_crash(tmp_path: Path) -> None:
@@ -2091,6 +2243,18 @@ def test_runtime_recovers_rotation_finalized_before_manifest_sync(
             reason="rotation_connection_open",
         )
     )
+    session.record_event(
+        tracker.record(
+            {
+                "type": "subscribed",
+                "id": 1,
+                "msg": {"channels": ["orderbook_delta", "trade"]},
+            },
+            local_row_index=1,
+            received_at_utc=START,
+            received_monotonic_ns=1,
+        )
+    )
 
     def crash_before_rotated_manifest(_observed_at_utc: datetime) -> None:
         raise RuntimeError("synthetic rotation manifest crash")
@@ -2115,7 +2279,7 @@ def test_runtime_recovers_rotation_finalized_before_manifest_sync(
     summary = json.loads((tmp_path / "campaign_summary.json").read_text())
 
     assert recovery["validation_status"] == "pass"
-    assert len(summary["segment_summaries"]) == 4
+    assert len(summary["segment_summaries"]) == 5
     assert summary["segment_summaries"][0]["terminal_reason"] == "rotation"
     assert any(
         segment["recovery_status"] == "FINALIZED_BEFORE_MANIFEST_SYNC"
@@ -2123,10 +2287,13 @@ def test_runtime_recovers_rotation_finalized_before_manifest_sync(
     )
 
 
-@pytest.mark.parametrize("partial_successor", [False, True])
+@pytest.mark.parametrize(
+    "partial_successor_suffix",
+    [None, "events.jsonl", "checkpoint.json", "summary.json"],
+)
 def test_runtime_recovers_finalized_rotation_without_complete_successor(
     tmp_path: Path,
-    partial_successor: bool,
+    partial_successor_suffix: str | None,
 ) -> None:
     session = RuntimeEvidenceSession(
         output_dir=tmp_path,
@@ -2144,14 +2311,14 @@ def test_runtime_recovers_finalized_rotation_without_complete_successor(
         terminal_reason="rotation",
         rotation_reason=RotationReason.BYTE_LIMIT,
     )
-    if partial_successor:
+    if partial_successor_suffix is not None:
         successor = (
             session.current_data_path.parent
-            / "d2e-rotation-no-successor.evidence.0002.events.jsonl"
+            / f"d2e-rotation-no-successor.evidence.0002.{partial_successor_suffix}"
         )
         successor.touch()
 
-    if partial_successor:
+    if partial_successor_suffix is not None:
         with pytest.raises(ValueError, match="partial successor"):
             recover_d2_runtime_artifacts(
                 tmp_path,
