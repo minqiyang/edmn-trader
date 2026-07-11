@@ -106,6 +106,12 @@ was not fully created, distinguishes split subscription-control acknowledgments
 from data frames, validates unique in-bound connection windows, replaces
 unbounded frame-hash lists with a constant-size hash chain, and rate-limits
 open-status rewrites to checkpoints, segment changes, or 60-second intervals.
+The final evidence-integrity pass isolates orderbook SID state from public
+trade channels, persists raw acknowledgment frames before typed PASS evidence,
+and reconstructs channel coverage during validation. A checkpointed launch
+record now binds selection/time-to-close metadata and explicit legacy-side
+pricing (`use_yes_price=false`). Validator and recovery replay records as a
+stream, with a 100k/64 MiB gate, and no-book freshness remains unknown.
 
 ## D2D evidence classification, durability, and performance
 

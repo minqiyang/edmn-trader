@@ -204,6 +204,7 @@ def test_fixture_subscription_includes_orderbook_and_public_trade_channels() -> 
         "params": {
             "channels": ["orderbook_delta", "trade"],
             "market_tickers": [MARKET],
+            "use_yes_price": False,
         },
     }
 

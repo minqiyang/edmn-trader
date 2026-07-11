@@ -45,6 +45,9 @@ The durability record wraps the complete D2A envelope. Its own
 `local_row_index` is segment-local so rotation can start a fresh append chain
 without changing the D2A transport row index. Rotation closes and hashes the
 old file once; event callbacks never scan or hash the full file.
+The first checkpointed record binds launch-time market/selection metadata,
+repository and threshold provenance, required public channels, command `1`,
+and explicit `use_yes_price=false` pricing semantics.
 Per-frame hashes remain in chained event records. Runtime summaries retain a
 constant-size frame-hash chain and latest hash rather than an unbounded list.
 Open status is refreshed on a checkpoint, segment change, or bounded interval,
@@ -59,6 +62,10 @@ not rewritten for every frame.
   acknowledgment bound to command `1` and the complete `orderbook_delta` plus
   `trade` channel set; an acknowledgment from an earlier connection is never
   carried forward.
+- Subscription PASS is reconstructed from the durable raw channel
+  acknowledgment frames and cross-checked against typed connection evidence.
+- Public trade/status channel SIDs cannot reset orderbook snapshot or sequence
+  state; orderbook integrity follows only the orderbook channel SID.
 - Increasing sequence values under unknown semantics remain unknown; they do
   not establish continuity.
 - REST lifecycle fallback proves lifecycle only, never WebSocket transport.
@@ -134,6 +141,9 @@ callback failure terminates the recorder instead of entering reconnect logic.
 Subscription control frames may precede the combined public-channel
 acknowledgment; data frames may not. Connection identities are unique and all
 connection windows must fit without overlap inside terminal timing boundaries.
+Terminal validation and recovery stream D2A rows through bounded accumulators;
+the 100,000-event runtime gate stays below the declared 64 MiB peak. A missing
+selected-market orderbook observation is `UNKNOWN_NOT_OBSERVED`, never `FRESH`.
 
 ## Safety
 

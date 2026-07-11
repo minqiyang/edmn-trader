@@ -568,6 +568,35 @@ def test_secret_like_keys_nested_in_sequences_are_rejected() -> None:
         )
 
 
+def test_public_trade_sid_does_not_reset_orderbook_integrity_segment() -> None:
+    tracker = _tracker()
+    snapshot = _record(
+        tracker,
+        "orderbook_snapshot",
+        seq=1,
+        local_row_index=1,
+        sid=11,
+    )
+    trade = _record(
+        tracker,
+        "trade",
+        seq=1,
+        local_row_index=2,
+        sid=22,
+    )
+    delta = _record(
+        tracker,
+        "orderbook_delta",
+        seq=2,
+        local_row_index=3,
+        sid=11,
+    )
+
+    assert trade.native_sid == 22
+    assert snapshot.segment_id == delta.segment_id
+    assert delta.admission_status is AdmissionStatus.ADMITTED
+
+
 @pytest.mark.parametrize(
     "private_key",
     ["account_id", "account_number", "fills", "order_id", "orders"],

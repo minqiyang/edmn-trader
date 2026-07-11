@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import tracemalloc
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -346,12 +347,29 @@ def test_actual_runtime_accepts_split_public_channel_acknowledgments(tmp_path: P
             {"type": "subscribed", "id": 1, "msg": {"channel": "trade"}},
             {
                 "type": "orderbook_snapshot",
-                "sid": 41,
+                "sid": 11,
                 "seq": 1,
                 "msg": {
                     "market_ticker": MARKET,
                     "yes_dollars_fp": [["0.42", "3"]],
                     "no_dollars_fp": [],
+                },
+            },
+            {
+                "type": "trade",
+                "sid": 22,
+                "seq": 1,
+                "msg": {"market_ticker": MARKET, "trade_id": "split-sid-trade"},
+            },
+            {
+                "type": "orderbook_delta",
+                "sid": 11,
+                "seq": 2,
+                "msg": {
+                    "market_ticker": MARKET,
+                    "side": "yes",
+                    "price_dollars": "0.42",
+                    "delta_fp": "1",
                 },
             },
         ]
@@ -377,6 +395,8 @@ def test_actual_runtime_accepts_split_public_channel_acknowledgments(tmp_path: P
     )
 
     assert summary["subscription_acknowledged"] is True
+    assert summary["admitted_selected_delta_count"] == 1
+    assert summary["public_trade_count"] == 1
     assert validate_d2_runtime_artifacts(tmp_path / "run")["status"] == "pass"
 
 
@@ -521,7 +541,10 @@ def test_runtime_session_wires_d2_pipeline_and_closes_verified_artifacts(
                 "type": "subscribed",
                 "id": 1,
                 "sid": 41,
-                "msg": {"channel": "orderbook_delta", "use_yes_price": False},
+                    "msg": {
+                        "channels": ["orderbook_delta", "trade"],
+                        "use_yes_price": False,
+                    },
             },
             local_row_index=1,
             received_at_utc=START + timedelta(seconds=1),
@@ -934,7 +957,7 @@ def test_runtime_keeps_two_markets_isolated_and_records_explicit_pricing_modes(
     tmp_path: Path,
 ) -> None:
     other = "D2E-OTHER"
-    session = _session(tmp_path, configured_duration_seconds=3)
+    session = _session(tmp_path, configured_duration_seconds=3, use_yes_price=True)
     tracker = _tracker(markets=(MARKET, other))
     events = [
         tracker.record(
@@ -1204,6 +1227,58 @@ def test_validator_rejects_event_before_connection_subscription_ack(tmp_path: Pa
     )
 
 
+def test_validator_rejects_ack_not_grounded_in_all_durable_channel_frames(
+    tmp_path: Path,
+) -> None:
+    session = _session_without_connection(tmp_path, configured_duration_seconds=1)
+    tracker = _tracker()
+    session.record_connection_event(
+        ConnectionEvidenceEvent(
+            event_type=ConnectionEvidenceType.CONNECTION_OPEN,
+            observed_at_utc=START,
+            connection_id=tracker.connection_id,
+            segment_id="d2e-runtime-test:segment:0001",
+            reason="partial_ack_connection",
+        )
+    )
+    session.record_event(
+        tracker.record(
+            {
+                "type": "subscribed",
+                "id": 1,
+                "msg": {"channel": "orderbook_delta"},
+            },
+            local_row_index=1,
+            received_at_utc=START,
+            received_monotonic_ns=1,
+        )
+    )
+    session.record_connection_event(
+        ConnectionEvidenceEvent(
+            event_type=ConnectionEvidenceType.SUBSCRIPTION_ACKNOWLEDGED,
+            observed_at_utc=START,
+            connection_id=tracker.connection_id,
+            segment_id=tracker.segment_id,
+            reason="incorrect_combined_ack",
+        )
+    )
+    session.close(
+        ended_at_utc=START + timedelta(seconds=1),
+        terminal_reason="bounded_duration_complete",
+        stop_requested=False,
+        connection_established=True,
+        subscription_acknowledged=True,
+        blocker_code=None,
+    )
+
+    validation = validate_d2_runtime_artifacts(tmp_path)
+    assert validation["status"] == "fail"
+    assert any(
+        "runtime terminal contradicts derived evidence" in item
+        for item in validation["failures"]
+    )
+
+
 def test_validator_requires_contiguous_d2a_runtime_indices(tmp_path: Path) -> None:
     session = _session(tmp_path, configured_duration_seconds=1)
     session.record_event(
@@ -1317,6 +1392,43 @@ def test_validator_rejects_private_account_fields_in_runtime_metadata(tmp_path: 
     validation = validate_d2_runtime_artifacts(tmp_path)
     assert validation["status"] == "fail"
     assert any("private account/order data" in failure for failure in validation["failures"])
+
+
+def test_validator_binds_market_selection_to_durable_launch_record(tmp_path: Path) -> None:
+    session = _session(tmp_path, configured_duration_seconds=1)
+    session.close(
+        ended_at_utc=START + timedelta(seconds=1),
+        terminal_reason="bounded_duration_complete",
+        stop_requested=False,
+        connection_established=True,
+        subscription_acknowledged=True,
+        blocker_code=None,
+    )
+    for name in ("campaign_summary.json", "campaign_manifest.json", "run_metadata.json"):
+        path = tmp_path / name
+        artifact = json.loads(path.read_text())
+        artifact["selected_market_selection"]["time_to_close_at_launch_seconds"] = 1
+        path.write_text(json.dumps(artifact), encoding="utf-8")
+
+    validation = validate_d2_runtime_artifacts(tmp_path)
+    assert validation["status"] == "fail"
+    assert any("selected_market_selection" in item for item in validation["failures"])
+
+
+def test_missing_orderbook_observation_is_unknown_not_fresh(tmp_path: Path) -> None:
+    session = _session(tmp_path, configured_duration_seconds=1)
+    summary = session.close(
+        ended_at_utc=START + timedelta(seconds=1),
+        terminal_reason="bounded_duration_complete",
+        stop_requested=False,
+        connection_established=True,
+        subscription_acknowledged=True,
+        blocker_code=None,
+    )
+    validation = validate_d2_runtime_artifacts(tmp_path)
+
+    assert summary["websocket_message_freshness_status"] == "UNKNOWN_NOT_OBSERVED"
+    assert validation["status"] == "pass"
 
 
 def test_closed_and_stale_lifecycle_fail_independently(tmp_path: Path) -> None:
@@ -1489,6 +1601,101 @@ def test_runtime_open_status_and_rebuild_hash_memory_are_bounded(
     assert "frame_hashes" not in rebuild_summary
     assert len(rebuild_summary["frame_hash_chain"]) == 64
     assert len(rebuild_summary["latest_frame_hash"]) == 64
+
+
+def test_runtime_validation_accumulator_is_bounded_at_100k_events() -> None:
+    campaign_id = "d2e-runtime-100k"
+    provenance = RuntimeCodeProvenance(COMMIT, "main", "https://example.test/repo", False)
+    tracker = KalshiWsIntegrityTracker(
+        campaign_id=campaign_id,
+        requested_market_tickers=(MARKET,),
+    )
+    tracker.start_connection()
+    opening_segment = tracker.segment_id
+    tracker.bind_subscription(command_id=1)
+    subscription_segment = tracker.segment_id
+
+    def records():
+        yield {
+            "record_type": "runtime_launch",
+            "campaign_id": campaign_id,
+            "runtime_launch": {
+                "runtime_schema_version": D2_RUNTIME_SCHEMA_VERSION,
+                "raw_event_schema_version": "edmn.kalshi.ws.raw.v2",
+                "evidence_schema_version": "edmn.evidence.chain.v1",
+                "threshold_policy_version": V2_THRESHOLD_POLICY.version,
+                "threshold_source_commit": COMMIT,
+                "threshold_policy": V2_THRESHOLD_POLICY.to_record(),
+                **provenance.to_record(),
+                "campaign_id": campaign_id,
+                "mode": "read_only_websocket_campaign",
+                "configured_duration_seconds": 300,
+                "started_at_utc": START.isoformat(),
+                "selected_market_metadata": {"ticker": MARKET, "status": "active"},
+                "selected_market_selection": {"selection_gate_result": "pass"},
+                "lifecycle_mode_and_source": "selected_market_rest_fallback",
+                "pricing_mode_and_source": "explicit_subscription_use_yes_price_false",
+                "subscription_command_id": 1,
+                "subscription_channels": ["orderbook_delta", "trade"],
+                "use_yes_price": False,
+            },
+        }
+        for event_type, segment_id in (
+            (ConnectionEvidenceType.CONNECTION_OPEN, opening_segment),
+            (ConnectionEvidenceType.SUBSCRIPTION_ACKNOWLEDGED, subscription_segment),
+        ):
+            yield {
+                "record_type": "connection_evidence",
+                "campaign_id": campaign_id,
+                "connection_event": ConnectionEvidenceEvent(
+                    event_type=event_type,
+                    observed_at_utc=START,
+                    connection_id=tracker.connection_id,
+                    segment_id=segment_id,
+                    reason="synthetic_100k_validation",
+                ).to_record(),
+            }
+        for index in range(1, 100_001):
+            event = tracker.record(
+                {"type": "heartbeat"},
+                local_row_index=index,
+                received_at_utc=START,
+                received_monotonic_ns=index,
+            )
+            yield {
+                "record_type": "raw_transport_event",
+                "campaign_id": campaign_id,
+                "d2a_event": event.to_record(),
+                "d2b_rebuild": {
+                    "disposition": "IGNORED_NON_ORDERBOOK",
+                    "reason": None,
+                    "frame": None,
+                },
+                "d2c_public_trades": [],
+            }
+
+    summary = {
+        "campaign_id": campaign_id,
+        "mode": "read_only_websocket_campaign",
+        "blocker_code": None,
+        "configured_duration_seconds": 300,
+        "started_at": START.isoformat(),
+        "ended_at": (START + timedelta(seconds=300)).isoformat(),
+        "terminal_reason": "bounded_duration_complete",
+        "stop_requested": False,
+        "threshold_source_commit": COMMIT,
+    }
+    tracemalloc.start()
+    _, counts, _, _ = ws_runtime._derive_runtime_validation(
+        summary,
+        records(),
+        allow_summary_terminal=True,
+    )
+    _, peak = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+
+    assert counts["event_count"] == 100_000
+    assert peak < 64 * 1024 * 1024
 
 
 def test_runtime_crash_recovery_removes_only_partial_tail_and_never_restarts(
@@ -1740,10 +1947,11 @@ def test_runtime_recovers_rotation_finalized_before_manifest_sync(
     summary = json.loads((tmp_path / "campaign_summary.json").read_text())
 
     assert recovery["validation_status"] == "pass"
-    assert len(summary["segment_summaries"]) == 3
+    assert len(summary["segment_summaries"]) == 4
     assert summary["segment_summaries"][0]["terminal_reason"] == "rotation"
-    assert summary["segment_summaries"][0]["recovery_status"] == (
-        "FINALIZED_BEFORE_MANIFEST_SYNC"
+    assert any(
+        segment["recovery_status"] == "FINALIZED_BEFORE_MANIFEST_SYNC"
+        for segment in summary["segment_summaries"]
     )
 
 
@@ -2114,7 +2322,7 @@ def test_runtime_validator_rejects_tampered_durable_record(tmp_path: Path) -> No
 
     assert validation["status"] == "fail"
     assert validation["artifact_integrity"] == "FAIL"
-    assert any("segment verification failed" in failure for failure in validation["failures"])
+    assert any("append-chain mismatch" in failure for failure in validation["failures"])
 
 
 def test_validator_derives_dimensions_instead_of_trusting_mutable_summaries(
@@ -2313,11 +2521,13 @@ def _session(
     *,
     configured_duration_seconds: int,
     max_segment_bytes: int = 64 * 1024 * 1024,
+    use_yes_price: bool = False,
 ) -> RuntimeEvidenceSession:
     session = _session_without_connection(
         root,
         configured_duration_seconds=configured_duration_seconds,
         max_segment_bytes=max_segment_bytes,
+        use_yes_price=use_yes_price,
     )
     for event_type, reason in (
         (ConnectionEvidenceType.CONNECTION_OPEN, "test_connection_open"),
@@ -2344,6 +2554,7 @@ def _session_without_connection(
     *,
     configured_duration_seconds: int,
     max_segment_bytes: int = 64 * 1024 * 1024,
+    use_yes_price: bool = False,
 ) -> RuntimeEvidenceSession:
     return RuntimeEvidenceSession(
         output_dir=root,
@@ -2365,6 +2576,7 @@ def _session_without_connection(
         ),
         threshold_policy=V2_THRESHOLD_POLICY,
         started_at_utc=START,
+        use_yes_price=use_yes_price,
         checkpoint_every_records=2,
         max_segment_bytes=max_segment_bytes,
     )

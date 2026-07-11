@@ -8,10 +8,11 @@ import os
 import re
 import subprocess
 from collections import Counter
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
+from itertools import chain
 from math import ceil
 from pathlib import Path
 from typing import Any
@@ -32,6 +33,7 @@ from edmn_trader.adapters.kalshi.public_evidence import (
 from edmn_trader.adapters.kalshi.ws_auth import KalshiWsAuthConfig
 from edmn_trader.adapters.kalshi.ws_book_rebuild import (
     KalshiWsBookRebuilder,
+    PricingMode,
     SegmentValidity,
 )
 from edmn_trader.adapters.kalshi.ws_events import (
@@ -42,9 +44,11 @@ from edmn_trader.adapters.kalshi.ws_events import (
     SequenceState,
 )
 from edmn_trader.adapters.kalshi.ws_recorder import (
+    REQUIRED_PUBLIC_CHANNELS,
     KalshiWsRecorderConfig,
     WebSocketFactory,
     record_kalshi_demo_ws_orderbook,
+    subscription_ack_channels,
 )
 from edmn_trader.data.evidence_classifier import (
     EvidenceDimensions,
@@ -194,7 +198,7 @@ def run_d2_kalshi_ws_runtime(
         selected_market_metadata=market_metadata,
         selected_market_selection=market_selection,
         lifecycle_mode_and_source="selected_market_rest_fallback",
-        pricing_mode_and_source="subscription_metadata_or_explicit_venue_default",
+        pricing_mode_and_source="explicit_subscription_use_yes_price_false",
         provenance=provenance,
         started_at_utc=started_at,
     )
@@ -427,6 +431,7 @@ class RuntimeEvidenceSession:
         provenance: RuntimeCodeProvenance,
         started_at_utc: datetime,
         threshold_policy: EvidenceThresholdPolicy = V2_THRESHOLD_POLICY,
+        use_yes_price: bool = False,
         checkpoint_every_records: int = 1_000,
         max_segment_bytes: int = 64 * 1024 * 1024,
         max_segment_age_seconds: int = 3_600,
@@ -445,6 +450,8 @@ class RuntimeEvidenceSession:
             raise ValueError("selected market ticker is required")
         if threshold_policy.effective_at_utc > started_at_utc:
             raise ValueError("threshold policy must be effective before runtime start")
+        if not isinstance(use_yes_price, bool):
+            raise ValueError("use_yes_price must be Boolean")
         self.output_dir = Path(output_dir)
         _require_empty_runtime_root(self.output_dir)
         self.campaign_id = campaign_id
@@ -458,6 +465,7 @@ class RuntimeEvidenceSession:
         self.provenance = provenance
         self.started_at_utc = started_at_utc.astimezone(UTC)
         self.threshold_policy = threshold_policy
+        self.use_yes_price = use_yes_price
         self.checkpoint_every_records = checkpoint_every_records
         self.max_segment_bytes = max_segment_bytes
         self.max_segment_age_seconds = max_segment_age_seconds
@@ -466,12 +474,20 @@ class RuntimeEvidenceSession:
         self._evidence_local_row_index = 0
         self._closed_segment_summaries: list[dict[str, object]] = []
         self._writer = self._new_writer()
-        self._rebuilder = KalshiWsBookRebuilder()
+        self._rebuilder = KalshiWsBookRebuilder(
+            explicit_pricing_mode=(
+                PricingMode.UNIFIED_YES_PRICE
+                if self.use_yes_price
+                else PricingMode.LEGACY_SIDE_PRICE
+            )
+        )
         self._sequence: dict[tuple[str, str], dict[str, object]] = {}
         self._rebuild: dict[tuple[str, str, str], dict[str, object]] = {}
         self._connection_events: list[dict[str, object]] = []
         self._connection_windows: dict[str, dict[str, object]] = {}
-        self._lifecycle_records: list[dict[str, object]] = []
+        self._lifecycle_observation_count = 0
+        self._latest_lifecycle_record: dict[str, object] | None = None
+        self._lifecycle_invalid_observed = False
         self._raw_counts: Counter[str] = Counter()
         self._admitted_selected_orderbook_counts: Counter[str] = Counter()
         self._raw_event_count = 0
@@ -489,6 +505,18 @@ class RuntimeEvidenceSession:
         self._last_open_status_at: datetime | None = None
         self._last_open_status_segment_id: str | None = None
         self._last_open_status_checkpoint_index = -1
+        self._evidence_local_row_index = 1
+        self._writer.append(
+            {
+                "schema_version": D2_RUNTIME_RECORD_SCHEMA_VERSION,
+                "record_type": "runtime_launch",
+                "campaign_id": self.campaign_id,
+                "local_row_index": self._evidence_local_row_index,
+                "observed_at_utc": self.started_at_utc.isoformat(),
+                "runtime_launch": self._runtime_launch_record(),
+            }
+        )
+        self._writer.checkpoint()
         self._write_open_status(self.started_at_utc)
 
     @property
@@ -530,6 +558,28 @@ class RuntimeEvidenceSession:
             observed_at_utc=event.observed_at_utc,
         )
 
+    def _runtime_launch_record(self) -> dict[str, object]:
+        return {
+            "runtime_schema_version": D2_RUNTIME_SCHEMA_VERSION,
+            "raw_event_schema_version": KALSHI_WS_RAW_SCHEMA_VERSION,
+            "evidence_schema_version": EVIDENCE_CHAIN_SCHEMA_VERSION,
+            "threshold_policy_version": self.threshold_policy.version,
+            "threshold_source_commit": self.provenance.public_code_commit,
+            "threshold_policy": self.threshold_policy.to_record(),
+            **self.provenance.to_record(),
+            "campaign_id": self.campaign_id,
+            "mode": self.mode,
+            "configured_duration_seconds": self.configured_duration_seconds,
+            "started_at_utc": self.started_at_utc.isoformat(),
+            "selected_market_metadata": self.selected_market_metadata,
+            "selected_market_selection": self.selected_market_selection,
+            "lifecycle_mode_and_source": self.lifecycle_mode_and_source,
+            "pricing_mode_and_source": self.pricing_mode_and_source,
+            "use_yes_price": self.use_yes_price,
+            "subscription_command_id": 1,
+            "subscription_channels": sorted(REQUIRED_PUBLIC_CHANNELS),
+        }
+
     def record_lifecycle(
         self,
         market_metadata: Mapping[str, object],
@@ -552,7 +602,12 @@ class RuntimeEvidenceSession:
             max_age_seconds=self.threshold_policy.maximum_lifecycle_age_seconds,
         )
         record = evidence.to_record()
-        self._lifecycle_records.append(record)
+        self._lifecycle_observation_count += 1
+        self._latest_lifecycle_record = record
+        self._lifecycle_invalid_observed |= (
+            record.get("lifecycle_status") != LifecycleStatus.OPEN
+            or record.get("validity") != LifecycleValidity.VALID
+        )
         self._last_lifecycle_at = observed_at_utc
         self._append(
             "lifecycle_evidence",
@@ -726,6 +781,7 @@ class RuntimeEvidenceSession:
             "close_time": self.selected_market_metadata.get("close_time"),
             "lifecycle_mode_and_source": self.lifecycle_mode_and_source,
             "pricing_mode_and_source": self.pricing_mode_and_source,
+            "use_yes_price": self.use_yes_price,
             "connection_windows": connection_windows,
             "disconnect_durations": disconnect_durations,
             "disconnect_count": len(disconnect_durations),
@@ -745,7 +801,6 @@ class RuntimeEvidenceSession:
             "segment_summaries": self._closed_segment_summaries,
             "sequence_summaries": self._sequence_summary_records(),
             "rebuild_summaries": self._rebuild_summary_records(),
-            "lifecycle_observations": self._lifecycle_records,
             "freshness_dimensions": freshness.to_record(),
             "artifact_integrity_summary": artifact_integrity,
             "independent_evidence_classifications": dimensions.to_record(),
@@ -762,7 +817,7 @@ class RuntimeEvidenceSession:
             ],
             "public_trade_count": self._public_trade_count,
             "trade_count": self._public_trade_count,
-            "lifecycle_observation_count": len(self._lifecycle_records),
+            "lifecycle_observation_count": self._lifecycle_observation_count,
             "connection_event_count": len(self._connection_events),
             "rebuild_frame_count": self._rebuild_frame_count,
             "rebuild_excluded_count": self._rebuild_excluded_count,
@@ -777,15 +832,12 @@ class RuntimeEvidenceSession:
             ),
             "last_event_time": self._last_event_at.isoformat() if self._last_event_at else None,
             "market_lifecycle_status": (
-                self._lifecycle_records[-1]["lifecycle_status"]
-                if self._lifecycle_records
+                self._latest_lifecycle_record["lifecycle_status"]
+                if self._latest_lifecycle_record
                 else "UNKNOWN"
             ),
-            "websocket_message_freshness_status": (
-                "QUIET_WARNING"
-                if (freshness.orderbook_event_quiet_interval_seconds or 0)
-                > self.threshold_policy.orderbook_quiet_warning_seconds
-                else "FRESH"
+            "websocket_message_freshness_status": _orderbook_freshness_status(
+                freshness.orderbook_event_quiet_interval_seconds
             ),
             "exchange_heartbeat_status": freshness.transport_keepalive_status,
             "supervisor_liveness_status": "UNKNOWN",
@@ -910,6 +962,7 @@ class RuntimeEvidenceSession:
             "close_time": self.selected_market_metadata.get("close_time"),
             "lifecycle_mode_and_source": self.lifecycle_mode_and_source,
             "pricing_mode_and_source": self.pricing_mode_and_source,
+            "use_yes_price": self.use_yes_price,
             "connection_windows": self._connection_window_records(),
             "disconnect_durations": [],
             "segment_summaries": [
@@ -1206,7 +1259,8 @@ class RuntimeEvidenceSession:
         blocker_code: str | None,
     ) -> EvidenceDimensions:
         lifecycle = _lifecycle_evidence_status(
-            self._lifecycle_records,
+            self._lifecycle_observation_count,
+            self._lifecycle_invalid_observed,
             self._max_lifecycle_age,
             self.threshold_policy.maximum_lifecycle_age_seconds,
         )
@@ -1307,6 +1361,7 @@ def validate_d2_runtime_artifacts(input_dir: Path) -> dict[str, object]:
         "freshness_dimensions",
         "independent_evidence_classifications",
         "selected_market_selection",
+        "use_yes_price",
     )
     failures.extend(f"missing required field: {name}" for name in required if name not in summary)
     try:
@@ -1318,8 +1373,7 @@ def validate_d2_runtime_artifacts(input_dir: Path) -> dict[str, object]:
     if not isinstance(segments, list) or not segments:
         failures.append("at least one closed evidence segment is required")
         segments = []
-    runtime_record_counts: Counter[str] = Counter()
-    runtime_records: list[dict[str, object]] = []
+    runtime_data_paths: list[Path] = []
     for segment in segments:
         try:
             data_path = root / str(segment["data_path"])
@@ -1331,7 +1385,7 @@ def validate_d2_runtime_artifacts(input_dir: Path) -> dict[str, object]:
             segment_summary = json.loads(
                 segment_summary_path.read_text(encoding="utf-8")
             )
-            _validate_runtime_records(data_path, runtime_record_counts, runtime_records)
+            runtime_data_paths.append(data_path)
             with data_path.open("rb") as handle:
                 digest = hashlib.file_digest(handle, "sha256").hexdigest()
             if verified.terminal_chain_hash != segment["terminal_chain_hash"]:
@@ -1394,7 +1448,7 @@ def validate_d2_runtime_artifacts(input_dir: Path) -> dict[str, object]:
     try:
         dimensions, durable_counts, durable_fields, _ = _derive_runtime_validation(
             summary,
-            runtime_records,
+            chain.from_iterable(_iter_runtime_records(path) for path in runtime_data_paths),
         )
     except (KeyError, TypeError, ValueError) as exc:
         failures.append(f"durable evidence classification failed: {exc}")
@@ -1568,11 +1622,7 @@ def _validate_runtime_metadata_safety(summary: Mapping[str, object]) -> None:
             validate_no_private_account_payload(value, path=field)
 
 
-def _validate_runtime_records(
-    path: Path,
-    counts: Counter[str],
-    records: list[dict[str, object]],
-) -> None:
+def _iter_runtime_records(path: Path) -> Iterator[dict[str, object]]:
     with path.open(encoding="utf-8") as handle:
         for line in handle:
             record = json.loads(line)
@@ -1582,13 +1632,21 @@ def _validate_runtime_records(
             record_type = record.get("record_type")
             if not isinstance(record_type, str):
                 raise ValueError("runtime record type is required")
-            counts[record_type] += 1
-            records.append(record)
             if record_type == "raw_transport_event":
                 d2a_event = record.get("d2a_event")
                 if not isinstance(d2a_event, Mapping):
                     raise ValueError("durable raw record is missing its D2A envelope")
                 KalshiWsRawEvent.from_record(d2a_event)
+            yield record
+
+
+def _iter_summary_runtime_records(
+    root: Path,
+    segments: Iterable[Mapping[str, object]],
+) -> Iterator[dict[str, object]]:
+    return chain.from_iterable(
+        _iter_runtime_records(root / str(segment["data_path"])) for segment in segments
+    )
 
 
 def _update_validation_connection_state(
@@ -1665,9 +1723,48 @@ def _validate_event_subscription_state(
     state["last_event_at"] = event.received_at_utc
 
 
+def _validate_runtime_launch_record(
+    launch: Mapping[str, object],
+    campaign_id: str,
+) -> None:
+    for field, expected in (
+        ("runtime_schema_version", D2_RUNTIME_SCHEMA_VERSION),
+        ("raw_event_schema_version", KALSHI_WS_RAW_SCHEMA_VERSION),
+        ("evidence_schema_version", EVIDENCE_CHAIN_SCHEMA_VERSION),
+        ("threshold_policy_version", V2_THRESHOLD_POLICY.version),
+        ("threshold_policy", V2_THRESHOLD_POLICY.to_record()),
+        ("campaign_id", campaign_id),
+        ("subscription_command_id", 1),
+        ("subscription_channels", sorted(REQUIRED_PUBLIC_CHANNELS)),
+    ):
+        if launch.get(field) != expected:
+            raise ValueError(f"durable runtime launch contradicts {field}")
+    if launch.get("threshold_source_commit") != launch.get("public_code_commit"):
+        raise ValueError("durable runtime launch threshold provenance contradicts code")
+    if not isinstance(launch.get("use_yes_price"), bool):
+        raise ValueError("durable runtime launch use_yes_price must be Boolean")
+    for field in ("selected_market_metadata", "selected_market_selection"):
+        value = _required_mapping(launch, field)
+        validate_no_secret_payload(value, path=f"runtime_launch.{field}")
+        validate_no_private_account_payload(value, path=f"runtime_launch.{field}")
+
+
+def _observe_runtime_gap(
+    *,
+    previous: datetime | None,
+    maximum: int | None,
+    observed_at_utc: datetime,
+    started_at_utc: datetime,
+) -> tuple[datetime, int]:
+    return observed_at_utc, _max_age(
+        maximum,
+        _age_seconds(observed_at_utc, previous or started_at_utc),
+    )
+
+
 def _derive_runtime_validation(
     summary: Mapping[str, object],
-    records: list[dict[str, object]],
+    records: Iterable[Mapping[str, object]],
     *,
     allow_summary_terminal: bool = False,
 ) -> tuple[
@@ -1676,24 +1773,71 @@ def _derive_runtime_validation(
     dict[str, object],
     dict[str, object],
 ]:
-    raw_events: list[KalshiWsRawEvent] = []
     sequence: dict[tuple[str, str], dict[str, object]] = {}
     rebuild: dict[tuple[str, str, str], dict[str, object]] = {}
     connection_events: list[Mapping[str, object]] = []
-    lifecycle_records: list[Mapping[str, object]] = []
-    terminal_records: list[Mapping[str, object]] = []
+    lifecycle_observation_count = 0
+    latest_lifecycle_record: Mapping[str, object] | None = None
+    lifecycle_invalid_observed = False
+    last_lifecycle_at: datetime | None = None
+    maximum_lifecycle_age: int | None = None
+    lifecycle_observed_min: datetime | None = None
+    lifecycle_observed_max: datetime | None = None
+    launch_record: Mapping[str, object] | None = None
+    terminal_record: Mapping[str, object] | None = None
     durable_campaign_ids: set[str] = set()
     connection_states: dict[str, dict[str, object]] = {}
     last_connection_observed_at: datetime | None = None
+    last_event_at: datetime | None = None
+    first_snapshot_at: datetime | None = None
+    last_keepalive_at: datetime | None = None
+    maximum_keepalive_age: int | None = None
+    last_orderbook_at: datetime | None = None
+    maximum_orderbook_quiet: int | None = None
+    raw_observed_min: datetime | None = None
+    raw_observed_max: datetime | None = None
+    durable_ack_channels: dict[str, set[str]] = {}
+    subscription_control_connections: set[str] = set()
     counts: Counter[str] = Counter()
-    selected_market = str(summary["market_ticker"])
-    validation_rebuilder = KalshiWsBookRebuilder()
+    selected_market: str | None = None
+    launch_started_at: datetime | None = None
+    validation_rebuilder: KalshiWsBookRebuilder | None = None
     for record in records:
         record_campaign_id = record.get("campaign_id")
         if not isinstance(record_campaign_id, str) or not record_campaign_id:
             raise ValueError("durable runtime record campaign_id is required")
         durable_campaign_ids.add(record_campaign_id)
         record_type = record["record_type"]
+        if record_type == "runtime_launch":
+            if launch_record is not None:
+                raise ValueError("exactly one durable runtime launch record is required")
+            launch_record = _required_mapping(record, "runtime_launch")
+            launch_started_at = _parse_required_time(
+                launch_record.get("started_at_utc"), "launch started_at_utc"
+            )
+            market_metadata = _required_mapping(
+                launch_record, "selected_market_metadata"
+            )
+            ticker = market_metadata.get("ticker") or market_metadata.get("market_ticker")
+            if not isinstance(ticker, str) or not ticker:
+                raise ValueError("durable runtime launch selected market is invalid")
+            selected_market = ticker
+            _validate_runtime_launch_record(launch_record, record_campaign_id)
+            validation_rebuilder = KalshiWsBookRebuilder(
+                explicit_pricing_mode=(
+                    PricingMode.UNIFIED_YES_PRICE
+                    if launch_record["use_yes_price"] is True
+                    else PricingMode.LEGACY_SIDE_PRICE
+                )
+            )
+            continue
+        if (
+            launch_record is None
+            or selected_market is None
+            or launch_started_at is None
+            or validation_rebuilder is None
+        ):
+            raise ValueError("durable runtime launch must precede all runtime evidence")
         if record_type == "connection_evidence":
             connection_record = _required_mapping(record, "connection_event")
             observed_at = _parse_required_time(
@@ -1744,22 +1888,75 @@ def _derive_runtime_validation(
                 raise ValueError("lifecycle evidence does not match selected market")
             if lifecycle.to_record() != lifecycle_record:
                 raise ValueError("durable lifecycle evidence contradicts its schema")
-            lifecycle_records.append(lifecycle_record)
+            lifecycle_observation_count += 1
+            latest_lifecycle_record = lifecycle_record
+            lifecycle_invalid_observed |= (
+                lifecycle.lifecycle_status is not LifecycleStatus.OPEN
+                or lifecycle.validity is not LifecycleValidity.VALID
+            )
+            last_lifecycle_at, maximum_lifecycle_age = _observe_runtime_gap(
+                previous=last_lifecycle_at,
+                maximum=maximum_lifecycle_age,
+                observed_at_utc=lifecycle.observed_at_utc,
+                started_at_utc=launch_started_at,
+            )
+            lifecycle_observed_min = min(
+                lifecycle_observed_min or lifecycle.observed_at_utc,
+                lifecycle.observed_at_utc,
+            )
+            lifecycle_observed_max = max(
+                lifecycle_observed_max or lifecycle.observed_at_utc,
+                lifecycle.observed_at_utc,
+            )
             continue
         if record_type == "runtime_terminal":
-            terminal_records.append(_required_mapping(record, "runtime_terminal"))
+            if terminal_record is not None:
+                raise ValueError("exactly one durable runtime terminal record is required")
+            terminal_record = _required_mapping(record, "runtime_terminal")
             continue
         if record_type != "raw_transport_event":
             continue
         event = KalshiWsRawEvent.from_record(_required_mapping(record, "d2a_event"))
         if event.campaign_id != record_campaign_id:
             raise ValueError("D2A campaign identity contradicts durable runtime record")
-        if event.local_row_index != len(raw_events) + 1:
+        if event.local_row_index != counts["event_count"] + 1:
             raise ValueError("D2A local row indices must be contiguous across the runtime")
         _validate_event_subscription_state(event, connection_states)
-        raw_events.append(event)
         counts["event_count"] += 1
         counts[f"native:{event.native_type or 'unknown'}"] += 1
+        last_event_at = event.received_at_utc
+        raw_observed_min = min(raw_observed_min or event.received_at_utc, event.received_at_utc)
+        raw_observed_max = max(raw_observed_max or event.received_at_utc, event.received_at_utc)
+        control_channels = subscription_ack_channels(
+            event.original_payload,
+            event.native_type or "unknown",
+        )
+        if event.native_type in {"subscribed", "ack", "ok", "error", "rejected"}:
+            subscription_control_connections.add(event.connection_id)
+            durable_ack_channels.setdefault(event.connection_id, set()).update(
+                control_channels
+            )
+        if event.native_type in {"heartbeat", "pong"}:
+            last_keepalive_at, maximum_keepalive_age = _observe_runtime_gap(
+                previous=last_keepalive_at,
+                maximum=maximum_keepalive_age,
+                observed_at_utc=event.received_at_utc,
+                started_at_utc=launch_started_at,
+            )
+        selected_orderbook_event = (
+            event.admission_status is AdmissionStatus.ADMITTED
+            and event.native_market_ticker == selected_market
+            and event.native_type in {"orderbook_snapshot", "orderbook_delta"}
+        )
+        if selected_orderbook_event:
+            last_orderbook_at, maximum_orderbook_quiet = _observe_runtime_gap(
+                previous=last_orderbook_at,
+                maximum=maximum_orderbook_quiet,
+                observed_at_utc=event.received_at_utc,
+                started_at_utc=launch_started_at,
+            )
+            if event.native_type == "orderbook_snapshot" and first_snapshot_at is None:
+                first_snapshot_at = event.received_at_utc
         recorded_trades = record.get("d2c_public_trades")
         if not isinstance(recorded_trades, list):
             raise ValueError("durable public trade evidence must be a list")
@@ -1807,15 +2004,15 @@ def _derive_runtime_validation(
         if key.startswith(("native:", "admitted_selected:")):
             del counts[key]
 
-    if not durable_campaign_ids and allow_summary_terminal:
-        durable_campaign_ids.add(str(summary["campaign_id"]))
     if len(durable_campaign_ids) != 1:
         raise ValueError("durable runtime records require one campaign identity")
     durable_campaign_id = next(iter(durable_campaign_ids))
-    if len(terminal_records) == 1:
-        terminal = terminal_records[0]
+    if launch_record is None or launch_started_at is None or selected_market is None:
+        raise ValueError("exactly one durable runtime launch record is required")
+    if terminal_record is not None:
+        terminal = terminal_record
         terminal_timing = _required_mapping(terminal, "timing")
-    elif allow_summary_terminal and not terminal_records:
+    elif allow_summary_terminal:
         terminal = {
             "mode": summary["mode"],
             "blocker_code": summary.get("blocker_code"),
@@ -1830,8 +2027,19 @@ def _derive_runtime_validation(
         }
     else:
         raise ValueError("exactly one durable runtime terminal record is required")
+    if terminal.get("mode") != launch_record.get("mode"):
+        raise ValueError("runtime terminal mode contradicts durable launch")
+    if (
+        terminal_timing.get("configured_duration_seconds")
+        != launch_record.get("configured_duration_seconds")
+        or terminal_timing.get("threshold_source_commit")
+        != launch_record.get("threshold_source_commit")
+    ):
+        raise ValueError("runtime terminal policy contradicts durable launch")
     started = _parse_required_time(terminal_timing.get("started_at_utc"), "started_at_utc")
     ended = _parse_required_time(terminal_timing.get("ended_at"), "ended_at")
+    if started != launch_started_at:
+        raise ValueError("runtime terminal start contradicts durable launch")
     if ended < started:
         raise ValueError("runtime terminal end precedes start")
     actual = _decimal_seconds(ended - started)
@@ -1840,8 +2048,10 @@ def _derive_runtime_validation(
         started,
         ended,
         connection_events=connection_events,
-        raw_events=raw_events,
-        lifecycle_records=lifecycle_records,
+        raw_observed_min=raw_observed_min,
+        raw_observed_max=raw_observed_max,
+        lifecycle_observed_min=lifecycle_observed_min,
+        lifecycle_observed_max=lifecycle_observed_max,
         windows=windows,
     )
     connected = sum(
@@ -1859,43 +2069,28 @@ def _derive_runtime_validation(
         (Decimal(value) for value in disconnects),
         default=Decimal("0"),
     )
-    keepalives = [
-        event.received_at_utc
-        for event in raw_events
-        if event.native_type in {"heartbeat", "pong"}
-    ]
-    selected_orderbook = [
-        event
-        for event in raw_events
-        if event.admission_status is AdmissionStatus.ADMITTED
-        and event.native_market_ticker == selected_market
-        and event.native_type in {"orderbook_snapshot", "orderbook_delta"}
-    ]
-    lifecycle_times = [
-        _parse_required_time(record.get("observed_at_utc"), "lifecycle observed_at_utc")
-        for record in lifecycle_records
-    ]
-    maximum_keepalive_age = _maximum_observation_gap(keepalives, started, ended)
-    maximum_lifecycle_age = _maximum_observation_gap(lifecycle_times, started, ended)
-    maximum_orderbook_quiet = _maximum_observation_gap(
-        [event.received_at_utc for event in selected_orderbook],
-        started,
-        ended,
-    )
+    if last_keepalive_at is not None:
+        maximum_keepalive_age = _max_age(
+            maximum_keepalive_age,
+            _age_seconds(ended, last_keepalive_at),
+        )
+    if last_lifecycle_at is not None:
+        maximum_lifecycle_age = _max_age(
+            maximum_lifecycle_age,
+            _age_seconds(ended, last_lifecycle_at),
+        )
+    if last_orderbook_at is not None:
+        maximum_orderbook_quiet = _max_age(
+            maximum_orderbook_quiet,
+            _age_seconds(ended, last_orderbook_at),
+        )
     timing = build_evidence_timing(
         configured_duration_seconds=int(terminal_timing["configured_duration_seconds"]),
         started_at_utc=started,
         checkpoint_at_utc=None,
         ended_at_utc=ended,
-        first_snapshot_at=next(
-            (
-                event.received_at_utc
-                for event in selected_orderbook
-                if event.native_type == "orderbook_snapshot"
-            ),
-            None,
-        ),
-        last_event_at=raw_events[-1].received_at_utc if raw_events else None,
+        first_snapshot_at=first_snapshot_at,
+        last_event_at=last_event_at,
         terminal_reason=str(terminal_timing["terminal_reason"]),
         stop_requested=bool(terminal_timing["stop_requested"]),
         total_disconnect_seconds=max(Decimal("0"), actual - connected),
@@ -1903,14 +2098,18 @@ def _derive_runtime_validation(
         threshold_source_commit=str(terminal_timing["threshold_source_commit"]),
         threshold_effective_utc=V2_THRESHOLD_POLICY.effective_at_utc,
         transport_keepalive_age_seconds=(
-            _age_seconds(ended, keepalives[-1]) if keepalives else None
+            _age_seconds(ended, last_keepalive_at)
+            if last_keepalive_at is not None
+            else None
         ),
         lifecycle_observation_age_seconds=(
-            _age_seconds(ended, lifecycle_times[-1]) if lifecycle_times else None
+            _age_seconds(ended, last_lifecycle_at)
+            if last_lifecycle_at is not None
+            else None
         ),
         orderbook_event_quiet_interval_seconds=(
-            _age_seconds(ended, selected_orderbook[-1].received_at_utc)
-            if selected_orderbook
+            _age_seconds(ended, last_orderbook_at)
+            if last_orderbook_at is not None
             else None
         ),
         max_transport_keepalive_age_seconds=maximum_keepalive_age,
@@ -1935,8 +2134,19 @@ def _derive_runtime_validation(
     )
     coverage = connected / actual if actual else Decimal("0")
     derived_connection_established = bool(opened_ids)
+    durable_acknowledged_ids = {
+        connection_id
+        for connection_id, channels in durable_ack_channels.items()
+        if REQUIRED_PUBLIC_CHANNELS <= channels
+    }
+    grounded_acknowledged_ids = {
+        connection_id
+        for connection_id in acknowledged_ids
+        if connection_id not in subscription_control_connections
+        or connection_id in durable_acknowledged_ids
+    }
     derived_subscription_acknowledged = bool(
-        opened_ids and opened_ids <= acknowledged_ids and not rejected
+        opened_ids and opened_ids <= grounded_acknowledged_ids and not rejected
     )
     canonical_terminal = _runtime_terminal_payload(
         timing=timing,
@@ -1949,10 +2159,11 @@ def _derive_runtime_validation(
         connection_established=derived_connection_established,
         subscription_acknowledged=derived_subscription_acknowledged,
     )
-    if terminal_records and dict(terminal) != canonical_terminal:
+    if terminal_record is not None and dict(terminal) != canonical_terminal:
         raise ValueError("durable runtime terminal contradicts derived evidence")
     lifecycle = _loaded_lifecycle_status(
-        lifecycle_records,
+        lifecycle_observation_count,
+        lifecycle_invalid_observed,
         maximum_lifecycle_age,
     )
     dimensions = EvidenceDimensions(
@@ -1966,7 +2177,7 @@ def _derive_runtime_validation(
         ),
         transport_keepalive=(
             EvidenceStatus.UNKNOWN
-            if not keepalives
+            if last_keepalive_at is None
             else EvidenceStatus.PASS
             if (maximum_keepalive_age or 0)
             <= V2_THRESHOLD_POLICY.maximum_transport_keepalive_age_seconds
@@ -1974,7 +2185,7 @@ def _derive_runtime_validation(
         ),
         subscription_status=(
             EvidenceStatus.PASS
-            if opened_ids and opened_ids <= acknowledged_ids and not rejected
+            if opened_ids and opened_ids <= grounded_acknowledged_ids and not rejected
             else EvidenceStatus.FAIL
         ),
         sequence_integrity=_sequence_evidence_status(sequence),
@@ -1992,18 +2203,50 @@ def _derive_runtime_validation(
     ).to_record()
     freshness = evaluate_evidence_freshness(
         evaluated_at_utc=ended,
-        transport_keepalive_observed_at_utc=keepalives[-1] if keepalives else None,
+        transport_keepalive_observed_at_utc=last_keepalive_at,
         transport_keepalive_source=(
-            "RECORDED_WS_HEARTBEAT_OR_PONG" if keepalives else None
+            "RECORDED_WS_HEARTBEAT_OR_PONG" if last_keepalive_at is not None else None
         ),
-        lifecycle_observed_at_utc=lifecycle_times[-1] if lifecycle_times else None,
-        orderbook_event_at_utc=(
-            selected_orderbook[-1].received_at_utc if selected_orderbook else None
-        ),
+        lifecycle_observed_at_utc=last_lifecycle_at,
+        orderbook_event_at_utc=last_orderbook_at,
     )
     durable_fields: dict[str, object] = {
         **timing.to_record(),
+        **{
+            field: launch_record[field]
+            for field in (
+                "runtime_schema_version",
+                "raw_event_schema_version",
+                "evidence_schema_version",
+                "threshold_policy_version",
+                "threshold_source_commit",
+                "threshold_policy",
+                "public_code_commit",
+                "branch",
+                "remote",
+                "dirty_state",
+                "configured_duration_seconds",
+                "selected_market_metadata",
+                "selected_market_selection",
+                "lifecycle_mode_and_source",
+                "pricing_mode_and_source",
+                "use_yes_price",
+            )
+        },
         "campaign_id": durable_campaign_id,
+        "market": selected_market,
+        "market_ticker": selected_market,
+        "market_tickers": [selected_market],
+        "market_count": 1,
+        "market_status": _selected_status(
+            _required_mapping(launch_record, "selected_market_metadata")
+        ),
+        "status_at_launch": _selected_status(
+            _required_mapping(launch_record, "selected_market_metadata")
+        ),
+        "close_time": _required_mapping(
+            launch_record, "selected_market_metadata"
+        ).get("close_time"),
         "sequence_summaries": _sequence_summary_records(sequence),
         "rebuild_summaries": _rebuild_summary_records(rebuild),
         "connection_windows": windows,
@@ -2015,11 +2258,10 @@ def _derive_runtime_validation(
         ),
         "maximum_disconnect_seconds": _decimal_text(maximum_disconnect),
         "connection_coverage": _decimal_text(coverage),
-        "lifecycle_observations": list(lifecycle_records),
         "freshness_dimensions": freshness.to_record(),
         "raw_event_count": counts["event_count"],
         "public_trade_count": counts["trade_count"],
-        "lifecycle_observation_count": len(lifecycle_records),
+        "lifecycle_observation_count": lifecycle_observation_count,
         "connection_event_count": len(connection_events),
         "rebuild_excluded_count": sum(
             int(item["excluded_row_count"]) for item in rebuild.values()
@@ -2035,13 +2277,12 @@ def _derive_runtime_validation(
         ),
         "last_event_time": timing.last_event_at.isoformat() if timing.last_event_at else None,
         "market_lifecycle_status": (
-            lifecycle_records[-1]["lifecycle_status"] if lifecycle_records else "UNKNOWN"
+            latest_lifecycle_record["lifecycle_status"]
+            if latest_lifecycle_record is not None
+            else "UNKNOWN"
         ),
-        "websocket_message_freshness_status": (
-            "QUIET_WARNING"
-            if (freshness.orderbook_event_quiet_interval_seconds or 0)
-            > V2_THRESHOLD_POLICY.orderbook_quiet_warning_seconds
-            else "FRESH"
+        "websocket_message_freshness_status": _orderbook_freshness_status(
+            freshness.orderbook_event_quiet_interval_seconds
         ),
         "exchange_heartbeat_status": freshness.transport_keepalive_status,
         "connection_established": bool(opened_ids),
@@ -2277,18 +2518,23 @@ def _validate_runtime_interval(
     ended_at_utc: datetime,
     *,
     connection_events: list[Mapping[str, object]],
-    raw_events: list[KalshiWsRawEvent],
-    lifecycle_records: list[Mapping[str, object]],
+    raw_observed_min: datetime | None,
+    raw_observed_max: datetime | None,
+    lifecycle_observed_min: datetime | None,
+    lifecycle_observed_max: datetime | None,
     windows: list[Mapping[str, object]],
 ) -> None:
     observed_times = [
         _parse_required_time(event.get("observed_at_utc"), "connection observed_at_utc")
         for event in connection_events
     ]
-    observed_times.extend(event.received_at_utc for event in raw_events)
     observed_times.extend(
-        _parse_required_time(record.get("observed_at_utc"), "lifecycle observed_at_utc")
-        for record in lifecycle_records
+        value for value in (raw_observed_min, raw_observed_max) if value is not None
+    )
+    observed_times.extend(
+        value
+        for value in (lifecycle_observed_min, lifecycle_observed_max)
+        if value is not None
     )
     if any(value < started_at_utc or value > ended_at_utc for value in observed_times):
         raise ValueError("runtime evidence falls outside terminal timing boundaries")
@@ -2307,39 +2553,18 @@ def _validate_runtime_interval(
 
 
 def _loaded_lifecycle_status(
-    records: list[Mapping[str, object]],
+    observation_count: int,
+    invalid_observed: bool,
     maximum_age: int | None,
 ) -> EvidenceStatus:
-    if not records:
+    if not observation_count:
         return EvidenceStatus.UNKNOWN
-    if any(
-        record.get("lifecycle_status") != LifecycleStatus.OPEN
-        or record.get("validity") != LifecycleValidity.VALID
-        for record in records
-    ):
+    if invalid_observed:
         return EvidenceStatus.FAIL
     return (
         EvidenceStatus.PASS
         if (maximum_age or 0) <= V2_THRESHOLD_POLICY.maximum_lifecycle_age_seconds
         else EvidenceStatus.FAIL
-    )
-
-
-def _maximum_observation_gap(
-    observations: list[datetime],
-    started_at_utc: datetime,
-    ended_at_utc: datetime,
-) -> int | None:
-    if not observations:
-        return None
-    ordered = sorted(observations)
-    return max(
-        [_age_seconds(ordered[0], started_at_utc)]
-        + [
-            _age_seconds(current, previous)
-            for previous, current in zip(ordered, ordered[1:], strict=False)
-        ]
-        + [_age_seconds(ended_at_utc, ordered[-1])]
     )
 
 
@@ -2589,20 +2814,14 @@ def recover_d2_runtime_artifacts(
         "snapshot_required": recovered.snapshot_required,
         "inherited_book_state": recovered.inherited_book_state,
     }
-    recovered_records: list[dict[str, object]] = []
-    for closed_segment in summary["segment_summaries"]:
-        _validate_runtime_records(
-            root / str(closed_segment["data_path"]),
-            Counter(),
-            recovered_records,
-        )
     terminal_count = sum(
-        record.get("record_type") == "runtime_terminal" for record in recovered_records
+        record.get("record_type") == "runtime_terminal"
+        for record in _iter_summary_runtime_records(root, summary["segment_summaries"])
     )
     if terminal_count == 0:
         _, _, initial_fields, recovery_terminal = _derive_runtime_validation(
             summary,
-            recovered_records,
+            _iter_summary_runtime_records(root, summary["segment_summaries"]),
             allow_summary_terminal=True,
         )
         summary.update(initial_fields)
@@ -2636,18 +2855,11 @@ def recover_d2_runtime_artifacts(
                 "snapshot_required_after_recovery": True,
             }
         )
-        recovered_records = []
-        for closed_segment in summary["segment_summaries"]:
-            _validate_runtime_records(
-                root / str(closed_segment["data_path"]),
-                Counter(),
-                recovered_records,
-            )
     elif terminal_count != 1:
         raise ValueError("recovery requires at most one durable runtime terminal")
     _, durable_counts, durable_fields, _ = _derive_runtime_validation(
         summary,
-        recovered_records,
+        _iter_summary_runtime_records(root, summary["segment_summaries"]),
     )
     summary.update(durable_counts)
     summary.update(durable_fields)
@@ -2748,17 +2960,14 @@ def _rebuild_evidence_status(
 
 
 def _lifecycle_evidence_status(
-    records: list[Mapping[str, object]],
+    observation_count: int,
+    invalid_observed: bool,
     maximum_age: int | None,
     threshold: int,
 ) -> EvidenceStatus:
-    if not records:
+    if not observation_count:
         return EvidenceStatus.UNKNOWN
-    if any(
-        record.get("lifecycle_status") is not LifecycleStatus.OPEN
-        or record.get("validity") is not LifecycleValidity.VALID
-        for record in records
-    ):
+    if invalid_observed:
         return EvidenceStatus.FAIL
     return EvidenceStatus.PASS if (maximum_age or 0) <= threshold else EvidenceStatus.FAIL
 
@@ -2771,6 +2980,14 @@ def _source_type(counts: Counter[str]) -> str:
     if counts["trade"]:
         return "WEBSOCKET_PUBLIC_TRADE"
     return "WEBSOCKET_NO_ORDERBOOK"
+
+
+def _orderbook_freshness_status(age_seconds: int | None) -> str:
+    if age_seconds is None:
+        return "UNKNOWN_NOT_OBSERVED"
+    if age_seconds > V2_THRESHOLD_POLICY.orderbook_quiet_warning_seconds:
+        return "QUIET_WARNING"
+    return "FRESH"
 
 
 def _advance_frame_hash_chain(previous: object, frame_hash: str) -> str:

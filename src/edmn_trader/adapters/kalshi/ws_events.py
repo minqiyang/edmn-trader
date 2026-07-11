@@ -410,7 +410,7 @@ class KalshiWsIntegrityTracker:
         is_orderbook = native_type in {"orderbook_snapshot", "orderbook_delta"}
         has_requested_market = native_market_ticker in self.requested_market_tickers
         native_sid = _native_identifier(payload, "sid")
-        if native_sid is not None:
+        if is_orderbook and native_sid is not None:
             if self._subscription_sid is not None and native_sid != self._subscription_sid:
                 self._start_segment(SegmentBoundaryReason.SID_CHANGE)
             self._subscription_sid = native_sid
@@ -463,7 +463,7 @@ class KalshiWsIntegrityTracker:
             payload_sha256=payload_sha256(original_payload),
             channel=_native_channel(payload, native_type),
             subscription_id=_native_identifier(payload, "id"),
-            subscription_sid=self._subscription_sid,
+            subscription_sid=(self._subscription_sid if is_orderbook else native_sid),
             subscription_command_id=self._subscription_command_id,
             admission_status=admission_status,
             exclusion_reason=exclusion_reason,

@@ -37,7 +37,10 @@ numbers while the repository is still in early research scaffolding.
   finalized-before-manifest crash windows are recoverable. Split channel
   acknowledgments validate correctly, connection windows are interval-bound,
   frame-hash summary memory is constant-size, and open-status writes are
-  checkpoint/segment/interval bounded.
+  checkpoint/segment/interval bounded. Launch selection and explicit pricing
+  are checkpoint-bound, channel acknowledgments are raw-grounded, trade SIDs
+  cannot reset orderbook state, terminal/recovery validation streams under a
+  100k memory gate, and missing orderbook freshness remains unknown.
   Legacy v1 artifacts remain readable but are not selected for new WebSocket
   runs. Tests are mocked and public live trading remains disabled.
 - Added D2D orthogonal evidence classification, timestamp-derived duration,

@@ -84,8 +84,9 @@ def test_ws_recorder_writes_snapshot_and_delta_raw_private_events(tmp_path: Path
             "id": 1,
             "cmd": "subscribe",
             "params": {
-                "channels": ["orderbook_delta", "trade"],
-                "market_tickers": ["DEMO-MARKET"],
+                    "channels": ["orderbook_delta", "trade"],
+                    "market_tickers": ["DEMO-MARKET"],
+                    "use_yes_price": False,
             },
         }
     ]
@@ -257,6 +258,52 @@ def test_ws_recorder_does_not_reconnect_after_evidence_callback_failure(
         )
 
     assert factory_calls == 1
+
+
+def test_subscription_ack_event_is_not_persisted_before_completing_raw_frame(
+    tmp_path: Path,
+) -> None:
+    persisted_events = 0
+    connection_events = []
+
+    def fail_on_second_raw(_event) -> None:
+        nonlocal persisted_events
+        persisted_events += 1
+        if persisted_events == 2:
+            raise OSError("synthetic second acknowledgment write failure")
+
+    with pytest.raises(EvidenceCallbackError, match="OSError"):
+        record_kalshi_demo_ws_orderbook(
+            KalshiWsRecorderConfig(
+                campaign_id="split-ack-failure",
+                market_tickers=("DEMO-MARKET",),
+                raw_events_path=tmp_path / "unused.jsonl",
+                duration_seconds=5,
+                max_events=2,
+                persist_legacy_raw_events=False,
+            ),
+            KalshiWsAuthConfig(
+                api_key_id="fake",
+                private_key_path=_fake_private_key_path(tmp_path),
+            ),
+            websocket_factory=lambda *_args, **_kwargs: _FakeWebSocket(
+                [
+                    {
+                        "type": "subscribed",
+                        "id": 1,
+                        "msg": {"channel": "orderbook_delta"},
+                    },
+                    {"type": "subscribed", "id": 1, "msg": {"channel": "trade"}},
+                ]
+            ),
+            now=lambda: datetime(2026, 7, 3, 20, 0, tzinfo=UTC),
+            event_callback=fail_on_second_raw,
+            connection_callback=connection_events.append,
+        )
+
+    assert ConnectionEvidenceType.SUBSCRIPTION_ACKNOWLEDGED not in {
+        event.event_type for event in connection_events
+    }
 
 
 @pytest.mark.parametrize("raw", ["[]", "null", "1"])

@@ -55,6 +55,11 @@ Runtime memory and open-status writes are bounded: per-frame hashes stay in the
 chain while summaries keep only an aggregate/latest hash, and open metadata is
 updated on checkpoints, segment changes, or 60-second intervals. Split channel
 acknowledgments and rotation crashes before successor creation are covered.
+The durable launch checkpoint binds market selection, lifecycle deadline,
+channels, code provenance, and explicit pricing semantics. Validation derives
+subscription PASS from persisted raw acknowledgments, keeps trade SIDs from
+resetting orderbook state, streams terminal/recovery replay under the 100k
+memory gate, and reports no-book freshness as unknown.
 
 This checkpoint is software-only. Tests use mocked WebSocket and lifecycle
 transports. No VPS, credential, campaign, private raw data, production endpoint,

@@ -46,6 +46,7 @@ class KalshiWsRecorderConfig:
     max_events: int = 500
     max_reconnects: int = 0
     persist_legacy_raw_events: bool = True
+    use_yes_price: bool = False
     url: str = KALSHI_DEMO_WS_URL
 
     def __post_init__(self) -> None:
@@ -61,6 +62,8 @@ class KalshiWsRecorderConfig:
             raise ValueError("max_reconnects must be non-negative")
         if not isinstance(self.persist_legacy_raw_events, bool):
             raise ValueError("persist_legacy_raw_events must be Boolean")
+        if not isinstance(self.use_yes_price, bool):
+            raise ValueError("use_yes_price must be Boolean")
 
 
 @dataclass(frozen=True, slots=True)
@@ -152,7 +155,12 @@ def record_kalshi_demo_ws_orderbook(
                     previous_connection_id=previous_connection_id,
                     previous_segment_id=previous_segment_id,
                 )
-                websocket.send(_subscription_payload(config.market_tickers))
+                websocket.send(
+                    _subscription_payload(
+                        config.market_tickers,
+                        use_yes_price=config.use_yes_price,
+                    )
+                )
                 integrity_tracker.bind_subscription(command_id=1)
                 if reconnect_count:
                     _emit_connection(
@@ -178,10 +186,21 @@ def record_kalshi_demo_ws_orderbook(
                     payload = _loads(raw)
                     message_type = _message_type(payload)
                     acknowledged_channels.update(
-                        _subscription_ack_channels(payload, message_type)
+                        subscription_ack_channels(payload, message_type)
                     )
                     acknowledged = REQUIRED_PUBLIC_CHANNELS <= acknowledged_channels
                     rejected = _is_subscription_rejection(payload, message_type)
+                    event = integrity_tracker.record(
+                        payload,
+                        local_row_index=event_count + 1,
+                        received_at_utc=received_at,
+                        received_monotonic_ns=received_monotonic_ns,
+                    )
+                    row = event.to_record()
+                    if config.persist_legacy_raw_events:
+                        append_jsonl_record(config.raw_events_path, row)
+                    if event_callback is not None:
+                        _invoke_evidence_callback(event_callback, event)
                     if acknowledged and not current_subscription_acknowledged:
                         current_subscription_acknowledged = True
                         _emit_connection(
@@ -203,17 +222,6 @@ def record_kalshi_demo_ws_orderbook(
                             previous_connection_id=previous_connection_id,
                             previous_segment_id=previous_segment_id,
                         )
-                    event = integrity_tracker.record(
-                        payload,
-                        local_row_index=event_count + 1,
-                        received_at_utc=received_at,
-                        received_monotonic_ns=received_monotonic_ns,
-                    )
-                    row = event.to_record()
-                    if config.persist_legacy_raw_events:
-                        append_jsonl_record(config.raw_events_path, row)
-                    if event_callback is not None:
-                        _invoke_evidence_callback(event_callback, event)
                     event_count += 1
                     type_counts[message_type] += 1
                     last_event_time = _row_received_at(row)
@@ -309,7 +317,11 @@ def _websockets_connect(*args: object, **kwargs: object) -> object:
     return connect(*args, **kwargs)
 
 
-def _subscription_payload(market_tickers: tuple[str, ...]) -> str:
+def _subscription_payload(
+    market_tickers: tuple[str, ...],
+    *,
+    use_yes_price: bool = False,
+) -> str:
     return json.dumps(
         {
             "id": 1,
@@ -317,6 +329,7 @@ def _subscription_payload(market_tickers: tuple[str, ...]) -> str:
             "params": {
                 "channels": ["orderbook_delta", "trade"],
                 "market_tickers": list(market_tickers),
+                "use_yes_price": use_yes_price,
             },
         },
         sort_keys=True,
@@ -344,7 +357,7 @@ def _message_type(payload: Mapping[str, object]) -> str:
     return "unknown"
 
 
-def _subscription_ack_channels(
+def subscription_ack_channels(
     payload: Mapping[str, object],
     message_type: str,
 ) -> set[str]:
