@@ -190,7 +190,7 @@ reconciliation, Stage 51 long-term paper/demo validation framework, and Stage
 52 private live gate design and disabled public guard. The
 ledger records purpose, known commit hashes, files/modules
 added, validation commands, status, next-stage boundary, and safety status for
-each completed stage. Stage 35-52 and D2A-D2C are complete. D2D is the active
+each completed stage. Stage 35-52 and D2A-D2D are complete. D2E is the active
 separate delivery and mandatory stop boundary for the autonomous software
 program. No seven-day recorder launch is authorized by this handoff.
 
@@ -1587,14 +1587,15 @@ renamed, or noisy, use the equivalent checklist instead of debugging the skill.
 
 ## Next recommended action
 
-Independent adversarial review of the focused D2D PR, followed by correction,
+Independent adversarial review of the focused D2E PR, followed by correction,
 100k benchmark verification, merge, and merged-main verification. Then stop at
 the external owner gates; do not deploy or run a market campaign.
 
 ## Exact next prompt suggestion
 
-Review the D2D classifier, timing, append-chain, checkpoint, rotation, recovery,
-and benchmark contracts against synthetic fixtures only. After merged-main
+Review the D2E runtime assembly, D2D classifier, timing, append-chain,
+checkpoint, rotation, recovery, and benchmark contracts against synthetic
+fixtures only. After merged-main
 verification, stop before deployment, market network, campaign, credentials,
 retention deletion, or any order path.
 

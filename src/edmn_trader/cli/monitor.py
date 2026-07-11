@@ -1016,6 +1016,8 @@ def _health(
             return "BLOCKED"
         if any(value == "UNKNOWN" for value in dimensions.values()):
             return "WARNING"
+        if campaign.get("status") in {"d2_runtime_running", "D2_RUNTIME_RUNNING"}:
+            return "WARNING"
     if (
         risk.get("kill_switch")
         or risk.get("decision") == "reject"

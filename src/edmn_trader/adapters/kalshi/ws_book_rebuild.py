@@ -183,6 +183,7 @@ class _SegmentMetadata:
     pricing_mode_source: PricingModeSource | None = None
     subscription_id: str | int | None = None
     subscription_sid: str | int | None = None
+    market_tickers: set[str] = field(default_factory=set)
     invalidation_reason: RebuildReason | None = None
 
 
@@ -375,17 +376,22 @@ class KalshiWsBookRebuilder:
                 return metadata.invalidation_reason
             if current is None and observed is not None:
                 setattr(metadata, field_name, observed)
-        if event.native_type in {"orderbook_snapshot", "orderbook_delta"}:
-            observed_sid = event.subscription_sid
-            if (
-                observed_sid is not None
-                and metadata.subscription_sid is not None
-                and observed_sid != metadata.subscription_sid
-            ):
-                metadata.invalidation_reason = RebuildReason.IDENTITY_MISMATCH
-                return metadata.invalidation_reason
-            if metadata.subscription_sid is None and observed_sid is not None:
-                metadata.subscription_sid = observed_sid
+        observed_sid = event.subscription_sid
+        if (
+            observed_sid is not None
+            and metadata.subscription_sid is not None
+            and observed_sid != metadata.subscription_sid
+        ):
+            metadata.invalidation_reason = RebuildReason.IDENTITY_MISMATCH
+            return metadata.invalidation_reason
+        if metadata.subscription_sid is None and observed_sid is not None:
+            metadata.subscription_sid = observed_sid
+        observed_market = event.native_market_ticker
+        if observed_market is not None and observed_market not in event.requested_market_tickers:
+            metadata.invalidation_reason = RebuildReason.IDENTITY_MISMATCH
+            return metadata.invalidation_reason
+        if observed_market is not None:
+            metadata.market_tickers.add(observed_market)
         pricing_values = _pricing_values(event.original_payload)
         if not pricing_values:
             return None

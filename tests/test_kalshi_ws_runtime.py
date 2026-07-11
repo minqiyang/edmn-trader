@@ -1157,6 +1157,21 @@ def test_running_monitor_blocks_unsafe_or_incomplete_runtime_summary(tmp_path: P
     assert snapshot["validation"]["status"] == "fail"
 
 
+def test_running_monitor_never_reports_paper_ok(tmp_path: Path) -> None:
+    _session(tmp_path, configured_duration_seconds=300)
+    summary_path = tmp_path / "campaign_summary.json"
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    summary["independent_evidence_classifications"] = {
+        field: "PASS"
+        for field in summary["independent_evidence_classifications"]
+    }
+    summary_path.write_text(json.dumps(summary) + "\n", encoding="utf-8")
+
+    snapshot = build_monitor_snapshot(tmp_path, now=START + timedelta(seconds=1))
+
+    assert snapshot["run_info"]["health"] == "WARNING"
+
+
 def test_validator_rejects_noncanonical_durable_provenance(tmp_path: Path) -> None:
     session = _session(tmp_path, configured_duration_seconds=1)
     launch_path = tmp_path / session.current_data_path.relative_to(tmp_path)
