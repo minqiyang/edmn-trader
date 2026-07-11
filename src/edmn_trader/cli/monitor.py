@@ -163,12 +163,12 @@ def _parser() -> argparse.ArgumentParser:
 def _read_summaries(input_dir: Path, warnings: list[str]) -> dict[str, dict[str, object]]:
     summaries: dict[str, dict[str, object]] = {}
     for name in SUMMARY_FILES:
-        path = input_dir / name
-        if not path.exists():
-            continue
         try:
+            path = _safe_summary_path(input_dir, name)
+            if not path.exists():
+                continue
             payload = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
             warnings.append(f"CORRUPT_SUMMARY: {name}: {exc}")
             continue
         if isinstance(payload, dict):
@@ -176,6 +176,23 @@ def _read_summaries(input_dir: Path, warnings: list[str]) -> dict[str, dict[str,
         else:
             warnings.append(f"CORRUPT_SUMMARY: {name}: expected JSON object")
     return summaries
+
+
+def _safe_summary_path(input_dir: Path, name: str) -> Path:
+    root = input_dir.resolve()
+    relative = Path(name)
+    if relative.is_absolute() or ".." in relative.parts:
+        raise ValueError("summary path must be relative to the input directory")
+    candidate = root / relative
+    resolved = candidate.resolve(strict=False)
+    if resolved == root or root not in resolved.parents:
+        raise ValueError("summary path escapes the input directory")
+    current = root
+    for part in relative.parts:
+        current /= part
+        if current.is_symlink():
+            raise ValueError(f"summary path must not be a symlink: {name}")
+    return candidate
 
 
 def _read_records(input_dir: Path, warnings: list[str]) -> list[dict[str, object]]:

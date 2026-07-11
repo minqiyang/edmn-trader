@@ -173,16 +173,24 @@ def _contained_artifact_path(root: Path, value: object) -> Path:
     if relative.is_absolute() or ".." in relative.parts:
         raise ValueError("artifact path must be relative to the runtime root")
     resolved_root = root.resolve()
-    candidate = (resolved_root / relative).resolve(strict=False)
-    if candidate == resolved_root or resolved_root not in candidate.parents:
+    candidate = resolved_root / relative
+    resolved_candidate = candidate.resolve(strict=False)
+    if (
+        resolved_candidate == resolved_root
+        or resolved_root not in resolved_candidate.parents
+    ):
         raise ValueError("artifact path escapes the runtime root")
     return candidate
 
 
 def _runtime_metadata_path(root: Path, name: str) -> Path:
     path = _contained_artifact_path(root, name)
-    if path.is_symlink():
-        raise ValueError(f"runtime metadata path must not be a symlink: {name}")
+    resolved_root = root.resolve()
+    current = resolved_root
+    for part in Path(name).parts:
+        current /= part
+        if current.is_symlink():
+            raise ValueError(f"runtime metadata path must not be a symlink: {name}")
     return path
 
 
@@ -416,10 +424,10 @@ def write_d2_runtime_preflight_block(
         "strict_verdict": "STRICT NO-GO",
     }
     validate_no_secret_payload(summary)
-    _atomic_write_json(root / "campaign_summary.json", summary)
-    _atomic_write_json(root / "campaign_manifest.json", summary)
-    _atomic_write_json(root / "run_metadata.json", summary)
-    _atomic_write_json(root / "campaign_validation.json", validation)
+    _atomic_write_json(_runtime_metadata_path(root, "campaign_summary.json"), summary)
+    _atomic_write_json(_runtime_metadata_path(root, "campaign_manifest.json"), summary)
+    _atomic_write_json(_runtime_metadata_path(root, "run_metadata.json"), summary)
+    _atomic_write_json(_runtime_metadata_path(root, "campaign_validation.json"), validation)
     return {
         "campaign_id": campaign_id,
         "artifact_root": str(root),
@@ -1449,11 +1457,20 @@ def validate_d2_runtime_artifacts(input_dir: Path) -> dict[str, object]:
     root = Path(input_dir).resolve()
     failures: list[str] = []
     try:
-        summary = json.loads(
+        validation_path: Path | None = _runtime_metadata_path(root, "campaign_validation.json")
+    except (OSError, ValueError) as exc:
+        validation_path = None
+        failures.append(f"campaign_validation unavailable: {exc}")
+    summary: Mapping[str, object]
+    try:
+        loaded_summary = json.loads(
             _runtime_metadata_path(root, "campaign_summary.json").read_text(
                 encoding="utf-8"
             )
         )
+        if not isinstance(loaded_summary, Mapping):
+            raise ValueError("campaign_summary must be a JSON object")
+        summary = loaded_summary
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         summary = {}
         failures.append(f"campaign_summary unavailable: {exc}")
@@ -1583,14 +1600,24 @@ def validate_d2_runtime_artifacts(input_dir: Path) -> dict[str, object]:
     )
     if actual_segment_paths != listed_segment_paths or has_symlink:
         failures.append("segment artifact inventory contains missing or unlisted files")
-    if summary.get("status") == "d2_runtime_crash_recovered":
+    recovery_metadata: Mapping[str, object] | None = None
+    recovery_path: Path | None = None
+    try:
+        candidate_recovery_path = _runtime_metadata_path(root, "runtime_recovery.json")
+        if candidate_recovery_path.exists():
+            recovery_path = candidate_recovery_path
+    except (OSError, ValueError) as exc:
+        failures.append(f"runtime recovery metadata unavailable: {exc}")
+    if summary.get("status") == "d2_runtime_crash_recovered" and recovery_path is None:
+        failures.append("runtime recovery metadata is missing")
+    if recovery_path is not None:
         try:
-            recovery_path = _runtime_metadata_path(root, "runtime_recovery.json")
             recovery = json.loads(recovery_path.read_text(encoding="utf-8"))
-            validate_no_secret_payload(recovery)
-            validate_no_private_account_payload(recovery)
             if not isinstance(recovery, Mapping):
                 raise ValueError("runtime recovery metadata must be an object")
+            validate_no_secret_payload(recovery)
+            validate_no_private_account_payload(recovery)
+            recovery_metadata = recovery
             recovery_segment = next(
                 (
                     segment
@@ -1630,7 +1657,7 @@ def validate_d2_runtime_artifacts(input_dir: Path) -> dict[str, object]:
             expected_recovery["next_segment_metadata_path"] = (
                 f"evidence_segments/{expected_next_segment_id}.start.json"
             )
-            expected_recovery["recovered_at_utc"] = summary.get("ended_at")
+            expected_recovery["recovered_at_utc"] = recovery_segment.get("closed_at_utc")
             expected_recovery["validation_status"] = recovery.get("validation_status")
             if recovery.get("validation_status") not in {None, "pass", "fail", "blocked"}:
                 raise ValueError("runtime recovery validation status is invalid")
@@ -1646,7 +1673,7 @@ def validate_d2_runtime_artifacts(input_dir: Path) -> dict[str, object]:
                 raise ValueError("runtime recovery automatic restart must remain false")
             if recovery.get("replay_qualified") is not False:
                 raise ValueError("runtime recovery replay qualification must remain false")
-            metadata_path = _contained_artifact_path(
+            metadata_path = _runtime_metadata_path(
                 root, recovery["next_segment_metadata_path"]
             )
             start = json.loads(metadata_path.read_text(encoding="utf-8"))
@@ -1684,9 +1711,39 @@ def validate_d2_runtime_artifacts(input_dir: Path) -> dict[str, object]:
         ("executable_order_intent", False),
         ("production_endpoint_used", False),
         ("submit_attempts", 0),
+        ("real_money_trading", False),
+        ("replay_qualified", False),
     ):
         if summary.get(field) != expected:
             failures.append(f"unsafe runtime field: {field}")
+
+    recorded_integrity = summary.get("artifact_integrity_summary")
+    if not isinstance(recorded_integrity, Mapping):
+        failures.append("artifact integrity summary is missing or invalid")
+    elif recovery_metadata is not None:
+        expected_integrity = {
+            "integrity_scope": "CLOSED_FILE",
+            "recovery_status": "CRASH_RECOVERED",
+            "partial_tail_bytes_removed": recovery_metadata["partial_tail_bytes_removed"],
+            "snapshot_required": recovery_metadata["snapshot_required"],
+            "inherited_book_state": recovery_metadata["inherited_book_state"],
+        }
+        if dict(recorded_integrity) != expected_integrity:
+            failures.append("artifact integrity summary contradicts recovery metadata")
+    else:
+        expected_integrity = {
+            "schema_valid": True,
+            "required_artifacts_present": bool(segments),
+            "append_chain_verified": True,
+            "atomic_checkpoint_verified": True,
+            "closed_file_hash_verified": True,
+            "prohibited_content_scan": "PASS",
+            "recovery_status": "NOT_APPLICABLE_CLEAN_CLOSE",
+            "partial_tail_bytes_removed": 0,
+            "segment_count": len(segments),
+        }
+        if dict(recorded_integrity) != expected_integrity:
+            failures.append("artifact integrity summary contradicts verified artifacts")
     try:
         dimensions, durable_counts, durable_fields, _ = _derive_runtime_validation(
             summary,
@@ -1720,6 +1777,8 @@ def validate_d2_runtime_artifacts(input_dir: Path) -> dict[str, object]:
         failures.append("recorded evidence dimension contradicts artifacts: artifact_integrity")
         dimensions["artifact_integrity"] = EvidenceStatus.FAIL
     overall = classify_evidence(EvidenceDimensions(**dimensions)).overall_classification
+    if summary.get("overall_evidence_classification") != overall:
+        failures.append("overall evidence classification contradicts durable records")
     result = {
         "runtime_schema_version": D2_RUNTIME_SCHEMA_VERSION,
         "schema_version": D2_RUNTIME_SCHEMA_VERSION,
@@ -1737,7 +1796,8 @@ def validate_d2_runtime_artifacts(input_dir: Path) -> dict[str, object]:
         "submit_attempts": summary.get("submit_attempts"),
         "strict_verdict": "STRICT NO-GO",
     }
-    _atomic_write_json(root / "campaign_validation.json", result)
+    if validation_path is not None:
+        _atomic_write_json(validation_path, result)
     return result
 
 
@@ -1748,9 +1808,11 @@ def _validate_d2_preflight_block(
     failures: list[str] = []
     try:
         validation = json.loads(
-            (root / "campaign_validation.json").read_text(encoding="utf-8")
+            _runtime_metadata_path(root, "campaign_validation.json").read_text(
+                encoding="utf-8"
+            )
         )
-    except (OSError, json.JSONDecodeError) as exc:
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
         validation = {}
         failures.append(f"campaign_validation unavailable: {exc}")
     try:
@@ -1760,10 +1822,12 @@ def _validate_d2_preflight_block(
         failures.append(str(exc))
     for sibling_name in ("campaign_manifest.json", "run_metadata.json"):
         try:
-            sibling = json.loads((root / sibling_name).read_text(encoding="utf-8"))
+            sibling = json.loads(
+                _runtime_metadata_path(root, sibling_name).read_text(encoding="utf-8")
+            )
             if sibling != summary:
                 failures.append(f"{sibling_name} contradicts campaign_summary.json")
-        except (OSError, json.JSONDecodeError) as exc:
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
             failures.append(f"{sibling_name} unavailable: {exc}")
     for field, expected in (
         ("runtime_schema_version", D2_RUNTIME_SCHEMA_VERSION),
@@ -1772,6 +1836,8 @@ def _validate_d2_preflight_block(
         ("executable_order_intent", False),
         ("production_endpoint_used", False),
         ("submit_attempts", 0),
+        ("real_money_trading", False),
+        ("replay_qualified", False),
         ("event_count", 0),
         ("snapshot_count", 0),
         ("delta_count", 0),
@@ -1802,6 +1868,10 @@ def _validate_d2_preflight_block(
         "rebuild_summaries": [],
         "independent_evidence_classifications": canonical_dimensions,
         "overall_evidence_classification": "FAIL",
+        "artifact_integrity_summary": {
+            "required_artifacts_present": False,
+            "status": "NOT_APPLICABLE_PREFLIGHT_BLOCK",
+        },
         "source_type": "WEBSOCKET_NO_ORDERBOOK",
         "connection_established": False,
         "subscription_acknowledged": False,
@@ -1852,12 +1922,16 @@ def _validate_d2_preflight_block(
             "failures": failures,
             "strict_verdict": "STRICT NO-GO",
         }
-        _atomic_write_json(root / "campaign_validation.json", result)
+        try:
+            _atomic_write_json(_runtime_metadata_path(root, "campaign_validation.json"), result)
+        except (OSError, ValueError):
+            pass
         return result
     return expected_validation
 
 
 def _validate_runtime_metadata_safety(summary: Mapping[str, object]) -> None:
+    validate_no_private_account_payload(summary, path="campaign_summary")
     for field in ("selected_market_metadata", "selected_market_selection"):
         value = summary.get(field)
         if isinstance(value, Mapping):
@@ -2894,11 +2968,17 @@ def _write_recovery_segment_start(
             raise ValueError("runtime recovery metadata is unreadable") from exc
         if not isinstance(existing, Mapping) or set(existing) != set(payload):
             raise ValueError("runtime recovery metadata already exists")
-        if any(
-            existing.get(field) != value
-            for field, value in payload.items()
-            if field != "created_at_utc"
-        ) or _parse_time(existing.get("created_at_utc")) is None:
+        existing_created_at = _parse_time(existing.get("created_at_utc"))
+        if existing_created_at is not None:
+            _require_aware(existing_created_at, "existing recovery segment-start created_at_utc")
+        if (
+            any(
+                existing.get(field) != value
+                for field, value in payload.items()
+                if field != "created_at_utc"
+            )
+            or existing_created_at != recovered_at_utc
+        ):
             raise ValueError("runtime recovery metadata already exists")
         return path
     _atomic_write_json(
@@ -2919,15 +2999,57 @@ def recover_d2_runtime_artifacts(
     root = Path(input_dir).resolve()
     summary_path = _runtime_metadata_path(root, "campaign_summary.json")
     summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    if not isinstance(summary, Mapping):
+        raise ValueError("runtime recovery campaign summary must be an object")
     if summary.get("runtime_schema_version") != D2_RUNTIME_SCHEMA_VERSION:
         raise ValueError("runtime recovery requires the D2 runtime schema")
     segment_summaries = summary.get("segment_summaries", [])
+    if not isinstance(segment_summaries, list):
+        raise ValueError("runtime recovery segment summaries must be a list")
     open_segments = [
         segment
         for segment in segment_summaries
         if isinstance(segment, Mapping) and segment.get("segment_closed") is False
     ]
-    if not isinstance(segment_summaries, list) or len(open_segments) != 1:
+    recovery_path = _runtime_metadata_path(root, "runtime_recovery.json")
+    if recovery_path.exists():
+        loaded_recovery = json.loads(recovery_path.read_text(encoding="utf-8"))
+        if not isinstance(loaded_recovery, Mapping):
+            raise ValueError("runtime recovery metadata must be an object")
+        if not open_segments:
+            try:
+                dimensions, durable_counts, durable_fields, _ = _derive_runtime_validation(
+                    summary,
+                    _iter_summary_runtime_records(root, segment_summaries),
+                )
+                summary.update(durable_counts)
+                summary.update(durable_fields)
+                dimensions["artifact_integrity"] = EvidenceStatus.PASS
+                summary["independent_evidence_classifications"] = dimensions
+                summary["overall_evidence_classification"] = classify_evidence(
+                    EvidenceDimensions(**dimensions)
+                ).overall_classification
+                _sync_runtime_summary(root, summary)
+            except (KeyError, TypeError, ValueError) as exc:
+                raise ValueError(
+                    "existing runtime recovery artifacts could not be reconciled"
+                ) from exc
+            validation = validate_d2_runtime_artifacts(root)
+            recovery = dict(loaded_recovery)
+            recovery["validation_status"] = validation["status"]
+            summary["validation_status"] = validation["status"]
+            summary["evidence_classification"] = validation["overall_evidence_classification"]
+            _sync_runtime_summary(root, summary)
+            _atomic_write_json(recovery_path, recovery)
+            if validation["status"] != "pass":
+                raise ValueError("existing runtime recovery artifacts failed validation")
+            return recovery
+        recovered_at_utc = _parse_required_time(
+            loaded_recovery.get("recovered_at_utc"),
+            "runtime recovery recovered_at_utc",
+        )
+        _require_aware(recovered_at_utc, "runtime recovery recovered_at_utc")
+    if len(open_segments) != 1:
         raise ValueError("runtime recovery requires exactly one open segment")
     segment = open_segments[0]
     while True:
@@ -2990,6 +3112,11 @@ def recover_d2_runtime_artifacts(
     already_finalized = closed_summary_path.is_file()
     if already_finalized:
         closed_summary = json.loads(closed_summary_path.read_text(encoding="utf-8"))
+        recovered_at_utc = _parse_required_time(
+            closed_summary.get("closed_at_utc"),
+            "finalized segment closed_at_utc",
+        )
+        _require_aware(recovered_at_utc, "finalized segment closed_at_utc")
         next_segment_metadata_path = _write_recovery_segment_start(
             data_path.parent,
             segment_id=segment_id,

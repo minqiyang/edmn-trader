@@ -3354,3 +3354,255 @@ def _private_key(root: Path) -> Path:
         )
     )
     return path
+
+
+@pytest.mark.parametrize(
+    ("metadata_name", "target_name"),
+    [
+        ("campaign_summary.json", "run_metadata.json"),
+        ("campaign_manifest.json", "run_metadata.json"),
+        ("run_metadata.json", "campaign_summary.json"),
+    ],
+)
+def test_validator_rejects_internal_fixed_metadata_symlink(
+    tmp_path: Path,
+    metadata_name: str,
+    target_name: str,
+) -> None:
+    session = _session(tmp_path, configured_duration_seconds=1)
+    session.close(
+        ended_at_utc=START + timedelta(seconds=1),
+        terminal_reason="bounded_duration_complete",
+        stop_requested=False,
+        connection_established=True,
+        subscription_acknowledged=True,
+        blocker_code=None,
+    )
+    metadata_path = tmp_path / metadata_name
+    metadata_path.unlink()
+    metadata_path.symlink_to(tmp_path / target_name)
+
+    validation = validate_d2_runtime_artifacts(tmp_path)
+
+    assert validation["status"] == "fail"
+    assert any(metadata_name in failure for failure in validation["failures"])
+
+
+def test_preflight_validator_rejects_symlinked_metadata(tmp_path: Path) -> None:
+    ws_runtime.write_d2_runtime_preflight_block(
+        output_dir=tmp_path,
+        campaign_id="d2e-preflight-symlink",
+        mode="read_only_websocket_smoke",
+        configured_duration_seconds=300,
+        provenance=RuntimeCodeProvenance(COMMIT, "main", "https://example.test/repo", False),
+        blocker_code="NO_WS_CREDENTIALS",
+        started_at_utc=START,
+    )
+    manifest = tmp_path / "campaign_manifest.json"
+    manifest.unlink()
+    manifest.symlink_to(tmp_path / "run_metadata.json")
+
+    validation = validate_d2_runtime_artifacts(tmp_path)
+
+    assert validation["status"] == "fail"
+    assert any("campaign_manifest.json" in failure for failure in validation["failures"])
+
+
+def test_monitor_does_not_read_internal_summary_symlink(tmp_path: Path) -> None:
+    session = _session(tmp_path, configured_duration_seconds=1)
+    session.close(
+        ended_at_utc=START + timedelta(seconds=1),
+        terminal_reason="bounded_duration_complete",
+        stop_requested=False,
+        connection_established=True,
+        subscription_acknowledged=True,
+        blocker_code=None,
+    )
+    summary = tmp_path / "campaign_summary.json"
+    summary.unlink()
+    summary.symlink_to(tmp_path / "run_metadata.json")
+
+    snapshot = build_monitor_snapshot(tmp_path, now=START + timedelta(seconds=1))
+
+    assert snapshot["campaign"].get("campaign_id") is None
+    assert any("campaign_summary.json" in warning for warning in snapshot["run_info"]["warnings"])
+
+
+def test_runtime_recovery_is_retry_safe_after_later_validation_failure(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    session = _session(tmp_path, configured_duration_seconds=300)
+    session._writer._handle.close()
+    original_validate = ws_runtime.validate_d2_runtime_artifacts
+    failed = False
+
+    def fail_after_summary_sync(path: Path) -> dict[str, object]:
+        nonlocal failed
+        if not failed:
+            failed = True
+            raise RuntimeError("synthetic post-sync validation crash")
+        return original_validate(path)
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(ws_runtime, "validate_d2_runtime_artifacts", fail_after_summary_sync)
+        with pytest.raises(RuntimeError, match="post-sync validation crash"):
+            recover_d2_runtime_artifacts(
+                tmp_path,
+                recovered_at_utc=START + timedelta(seconds=10),
+            )
+
+    recovery = recover_d2_runtime_artifacts(
+        tmp_path,
+        recovered_at_utc=START + timedelta(seconds=20),
+    )
+
+    assert recovery["validation_status"] == "pass"
+
+
+def test_runtime_recovery_rejects_tampered_existing_segment_start_timestamp(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    session = _session(tmp_path, configured_duration_seconds=1)
+    session.record_event(
+        _tracker().record(
+            {"type": "heartbeat", "sid": 41},
+            local_row_index=1,
+            received_at_utc=START,
+            received_monotonic_ns=1,
+        )
+    )
+    with monkeypatch.context() as scoped:
+        scoped.setattr(
+            session,
+            "_verify_closed_segments",
+            lambda: (_ for _ in ()).throw(RuntimeError("synthetic post-close crash")),
+        )
+        with pytest.raises(RuntimeError, match="post-close crash"):
+            session.close(
+                ended_at_utc=START + timedelta(seconds=1),
+                terminal_reason="bounded_duration_complete",
+                stop_requested=False,
+                connection_established=True,
+                subscription_acknowledged=True,
+                blocker_code=None,
+            )
+    start_path = tmp_path / "evidence_segments" / "d2e-runtime-test.recovery.next.start.json"
+    start_path.write_text(
+        json.dumps(
+            {
+                "schema_version": ws_runtime.EVIDENCE_SEGMENT_START_SCHEMA_VERSION,
+                "segment_id": "d2e-runtime-test.recovery.next",
+                "previous_segment_id": "d2e-runtime-test.evidence.0001",
+                "segment_created": True,
+                "connection_reset_required": True,
+                "snapshot_required": True,
+                "inherited_book_state": False,
+                "created_at_utc": (START + timedelta(hours=1)).isoformat(),
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="recovery metadata already exists"):
+        recover_d2_runtime_artifacts(
+            tmp_path,
+            recovered_at_utc=START + timedelta(seconds=2),
+        )
+
+
+def test_validator_rejects_non_object_campaign_summary(tmp_path: Path) -> None:
+    session = _session(tmp_path, configured_duration_seconds=1)
+    session.close(
+        ended_at_utc=START + timedelta(seconds=1),
+        terminal_reason="bounded_duration_complete",
+        stop_requested=False,
+        connection_established=True,
+        subscription_acknowledged=True,
+        blocker_code=None,
+    )
+    (tmp_path / "campaign_summary.json").write_text("[]\n", encoding="utf-8")
+
+    validation = validate_d2_runtime_artifacts(tmp_path)
+
+    assert validation["status"] == "fail"
+    assert any(
+        "campaign_summary must be a JSON object" in failure
+        for failure in validation["failures"]
+    )
+
+
+@pytest.mark.parametrize("field", ["replay_qualified", "real_money_trading"])
+def test_validator_rejects_tampered_top_level_safety_fields(
+    tmp_path: Path,
+    field: str,
+) -> None:
+    session = _session(tmp_path, configured_duration_seconds=1)
+    session.close(
+        ended_at_utc=START + timedelta(seconds=1),
+        terminal_reason="bounded_duration_complete",
+        stop_requested=False,
+        connection_established=True,
+        subscription_acknowledged=True,
+        blocker_code=None,
+    )
+    for name in ("campaign_summary.json", "campaign_manifest.json", "run_metadata.json"):
+        path = tmp_path / name
+        payload = json.loads(path.read_text())
+        payload[field] = True
+        path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+
+    validation = validate_d2_runtime_artifacts(tmp_path)
+
+    assert validation["status"] == "fail"
+    assert any(field in failure for failure in validation["failures"])
+
+
+def test_validator_rejects_tampered_integrity_and_overall_classification(
+    tmp_path: Path,
+) -> None:
+    session = _session(tmp_path, configured_duration_seconds=1)
+    session.close(
+        ended_at_utc=START + timedelta(seconds=1),
+        terminal_reason="bounded_duration_complete",
+        stop_requested=False,
+        connection_established=True,
+        subscription_acknowledged=True,
+        blocker_code=None,
+    )
+    for name in ("campaign_summary.json", "campaign_manifest.json", "run_metadata.json"):
+        path = tmp_path / name
+        payload = json.loads(path.read_text())
+        payload["artifact_integrity_summary"]["closed_file_hash_verified"] = False
+        payload["overall_evidence_classification"] = "TAMPERED"
+        path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+
+    validation = validate_d2_runtime_artifacts(tmp_path)
+
+    assert validation["status"] == "fail"
+    assert any("artifact integrity summary" in failure for failure in validation["failures"])
+    assert any("overall evidence classification" in failure for failure in validation["failures"])
+
+
+def test_validator_rejects_top_level_private_account_field(tmp_path: Path) -> None:
+    session = _session(tmp_path, configured_duration_seconds=1)
+    session.close(
+        ended_at_utc=START + timedelta(seconds=1),
+        terminal_reason="bounded_duration_complete",
+        stop_requested=False,
+        connection_established=True,
+        subscription_acknowledged=True,
+        blocker_code=None,
+    )
+    for name in ("campaign_summary.json", "campaign_manifest.json", "run_metadata.json"):
+        path = tmp_path / name
+        payload = json.loads(path.read_text())
+        payload["account_id"] = "private"
+        path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+
+    validation = validate_d2_runtime_artifacts(tmp_path)
+
+    assert validation["status"] == "fail"
+    assert any("private account/order data" in failure for failure in validation["failures"])
