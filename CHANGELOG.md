@@ -34,7 +34,10 @@ numbers while the repository is still in early research scaffolding.
   terminally, D2A rows are connection/acknowledgment-bound with contiguous
   indices, run roots are no-overwrite, private runtime metadata is rejected,
   imported-package provenance replaces current-directory provenance, and
-  finalized-before-manifest crash windows are recoverable.
+  finalized-before-manifest crash windows are recoverable. Split channel
+  acknowledgments validate correctly, connection windows are interval-bound,
+  frame-hash summary memory is constant-size, and open-status writes are
+  checkpoint/segment/interval bounded.
   Legacy v1 artifacts remain readable but are not selected for new WebSocket
   runs. Tests are mocked and public live trading remains disabled.
 - Added D2D orthogonal evidence classification, timestamp-derived duration,

@@ -45,6 +45,10 @@ The durability record wraps the complete D2A envelope. Its own
 `local_row_index` is segment-local so rotation can start a fresh append chain
 without changing the D2A transport row index. Rotation closes and hashes the
 old file once; event callbacks never scan or hash the full file.
+Per-frame hashes remain in chained event records. Runtime summaries retain a
+constant-size frame-hash chain and latest hash rather than an unbounded list.
+Open status is refreshed on a checkpoint, segment change, or bounded interval,
+not rewritten for every frame.
 
 ## Evidence Boundaries
 
@@ -127,6 +131,9 @@ interval from runtime start to the first applicable observation.
 Validator subscription evidence is ordered and connection-bound for every D2A
 row, and D2A transport indices must remain globally contiguous. A durable
 callback failure terminates the recorder instead of entering reconnect logic.
+Subscription control frames may precede the combined public-channel
+acknowledgment; data frames may not. Connection identities are unique and all
+connection windows must fit without overlap inside terminal timing boundaries.
 
 ## Safety
 

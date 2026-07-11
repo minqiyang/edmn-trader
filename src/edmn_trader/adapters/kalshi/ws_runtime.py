@@ -74,6 +74,7 @@ from edmn_trader.data.payload_safety import (
 
 D2_RUNTIME_SCHEMA_VERSION = "edmn.kalshi.ws.runtime.v2"
 D2_RUNTIME_RECORD_SCHEMA_VERSION = "edmn.kalshi.ws.runtime_record.v1"
+OPEN_STATUS_INTERVAL_SECONDS = 60
 _HEX_COMMIT = re.compile(r"^[0-9a-f]{7,40}$")
 _BAD_SEQUENCE_STATES = {
     SequenceState.SEQUENCE_GAP_DETECTED,
@@ -485,6 +486,9 @@ class RuntimeEvidenceSession:
         self._max_keepalive_age: int | None = None
         self._max_lifecycle_age: int | None = None
         self._max_orderbook_quiet: int | None = None
+        self._last_open_status_at: datetime | None = None
+        self._last_open_status_segment_id: str | None = None
+        self._last_open_status_checkpoint_index = -1
         self._write_open_status(self.started_at_utc)
 
     @property
@@ -855,7 +859,22 @@ class RuntimeEvidenceSession:
                 **payload,
             }
         )
-        self._write_open_status(observed_at_utc)
+        self._maybe_write_open_status(observed_at_utc)
+
+    def _maybe_write_open_status(self, observed_at_utc: datetime) -> None:
+        status = self._writer.status_record()
+        checkpoint_index = int(status["last_committed_local_row_index"])
+        interval_due = (
+            self._last_open_status_at is None
+            or (observed_at_utc - self._last_open_status_at).total_seconds()
+            >= OPEN_STATUS_INTERVAL_SECONDS
+        )
+        if (
+            interval_due
+            or self._writer.segment_id != self._last_open_status_segment_id
+            or checkpoint_index != self._last_open_status_checkpoint_index
+        ):
+            self._write_open_status(observed_at_utc)
 
     def _write_open_status(self, observed_at_utc: datetime) -> None:
         actual = _decimal_seconds(observed_at_utc - self.started_at_utc)
@@ -955,6 +974,12 @@ class RuntimeEvidenceSession:
         }
         _atomic_write_json(self.output_dir / "campaign_summary.json", summary)
         _atomic_write_json(self.output_dir / "run_metadata.json", summary)
+        writer_status = self._writer.status_record()
+        self._last_open_status_at = observed_at_utc
+        self._last_open_status_segment_id = self._writer.segment_id
+        self._last_open_status_checkpoint_index = int(
+            writer_status["last_committed_local_row_index"]
+        )
 
     def _closed_segment_record(
         self,
@@ -1056,7 +1081,8 @@ class RuntimeEvidenceSession:
                 "invalidation_reasons": Counter(),
                 "pricing_modes": set(),
                 "pricing_mode_sources": set(),
-                "frame_hashes": [],
+                "frame_hash_chain": None,
+                "latest_frame_hash": None,
                 "terminal_state_hash": None,
                 "snapshot_first_admitted": False,
                 "native_state_valid": None,
@@ -1074,7 +1100,10 @@ class RuntimeEvidenceSession:
             frame_record = frame.to_record()
             record["frame"] = frame_record
             summary["frame_count"] += 1
-            summary["frame_hashes"].append(frame.frame_hash)
+            summary["frame_hash_chain"] = _advance_frame_hash_chain(
+                summary["frame_hash_chain"], frame.frame_hash
+            )
+            summary["latest_frame_hash"] = frame.frame_hash
             summary["terminal_state_hash"] = frame.terminal_state_hash
             summary["pricing_modes"].add(frame.pricing_mode)
             summary["pricing_mode_sources"].add(frame.pricing_mode_source)
@@ -1571,8 +1600,8 @@ def _update_validation_connection_state(
         ConnectionEvidenceType.CONNECTION_OPEN,
         ConnectionEvidenceType.RECONNECT,
     }:
-        if state is not None and state["closed_at"] is None:
-            raise ValueError("connection opened more than once without closing")
+        if state is not None:
+            raise ValueError("connection identifiers must be unique")
         states[event.connection_id] = {
             "opened_at": event.observed_at_utc,
             "opening_segment_id": event.segment_id,
@@ -1609,16 +1638,26 @@ def _validate_event_subscription_state(
     opened_at = state.get("opened_at")
     acknowledged_at = state.get("acknowledged_at")
     closed_at = state.get("closed_at")
+    subscription_control = event.native_type in {
+        "subscribed",
+        "ack",
+        "ok",
+        "error",
+        "rejected",
+    }
     if not isinstance(opened_at, datetime) or event.received_at_utc < opened_at:
         raise ValueError("D2A event predates its connection open evidence")
-    if not isinstance(acknowledged_at, datetime) or event.received_at_utc < acknowledged_at:
+    if not subscription_control and (
+        not isinstance(acknowledged_at, datetime)
+        or event.received_at_utc < acknowledged_at
+    ):
         raise ValueError("D2A event was recorded before subscription acknowledgment")
     if isinstance(closed_at, datetime) and event.received_at_utc >= closed_at:
         raise ValueError("D2A event was recorded after connection close")
     last_event_at = state.get("last_event_at")
     if isinstance(last_event_at, datetime) and event.received_at_utc < last_event_at:
         raise ValueError("D2A event chronology moves backwards")
-    if event.segment_boundary_reason in {
+    if not subscription_control and event.segment_boundary_reason in {
         SegmentBoundaryReason.NEW_SUBSCRIPTION,
         SegmentBoundaryReason.RESUBSCRIPTION,
     } and event.segment_id != state.get("acknowledged_segment_id"):
@@ -1793,13 +1832,24 @@ def _derive_runtime_validation(
         raise ValueError("exactly one durable runtime terminal record is required")
     started = _parse_required_time(terminal_timing.get("started_at_utc"), "started_at_utc")
     ended = _parse_required_time(terminal_timing.get("ended_at"), "ended_at")
+    if ended < started:
+        raise ValueError("runtime terminal end precedes start")
     actual = _decimal_seconds(ended - started)
     windows = _validation_connection_windows(connection_events, ended)
+    _validate_runtime_interval(
+        started,
+        ended,
+        connection_events=connection_events,
+        raw_events=raw_events,
+        lifecycle_records=lifecycle_records,
+        windows=windows,
+    )
     connected = sum(
         (Decimal(str(window["duration_seconds"])) for window in windows),
         Decimal("0"),
     )
-    connected = min(actual, connected)
+    if connected > actual:
+        raise ValueError("connection coverage exceeds the runtime interval")
     disconnects = RuntimeEvidenceSession._disconnect_durations(
         windows,
         started_at_utc=started,
@@ -2098,7 +2148,8 @@ def _accumulate_validation_rebuild(
             "invalidation_reasons": Counter(),
             "pricing_modes": set(),
             "pricing_mode_sources": set(),
-            "frame_hashes": [],
+            "frame_hash_chain": None,
+            "latest_frame_hash": None,
             "terminal_state_hash": None,
             "snapshot_first_admitted": False,
             "native_state_valid": None,
@@ -2118,7 +2169,10 @@ def _accumulate_validation_rebuild(
         summary["frame_count"] += 1
         counts["rebuild_frame_count"] += 1
         summary["native_state_valid"] = frame.get("segment_validity") == SegmentValidity.VALID
-        summary["frame_hashes"].append(frame["frame_hash"])
+        summary["frame_hash_chain"] = _advance_frame_hash_chain(
+            summary["frame_hash_chain"], str(frame["frame_hash"])
+        )
+        summary["latest_frame_hash"] = frame["frame_hash"]
         summary["terminal_state_hash"] = frame["terminal_state_hash"]
         summary["pricing_modes"].add(frame["pricing_mode"])
         summary["pricing_mode_sources"].add(frame["pricing_mode_source"])
@@ -2216,6 +2270,40 @@ def _validation_connection_windows(
             }
         )
     return records
+
+
+def _validate_runtime_interval(
+    started_at_utc: datetime,
+    ended_at_utc: datetime,
+    *,
+    connection_events: list[Mapping[str, object]],
+    raw_events: list[KalshiWsRawEvent],
+    lifecycle_records: list[Mapping[str, object]],
+    windows: list[Mapping[str, object]],
+) -> None:
+    observed_times = [
+        _parse_required_time(event.get("observed_at_utc"), "connection observed_at_utc")
+        for event in connection_events
+    ]
+    observed_times.extend(event.received_at_utc for event in raw_events)
+    observed_times.extend(
+        _parse_required_time(record.get("observed_at_utc"), "lifecycle observed_at_utc")
+        for record in lifecycle_records
+    )
+    if any(value < started_at_utc or value > ended_at_utc for value in observed_times):
+        raise ValueError("runtime evidence falls outside terminal timing boundaries")
+    previous_closed: datetime | None = None
+    for window in sorted(windows, key=lambda item: str(item["opened_at_utc"])):
+        opened = _parse_required_time(window.get("opened_at_utc"), "connection opened_at_utc")
+        closed = _parse_required_time(window.get("closed_at_utc"), "connection closed_at_utc")
+        if (
+            opened < started_at_utc
+            or closed > ended_at_utc
+            or closed < opened
+            or (previous_closed is not None and opened < previous_closed)
+        ):
+            raise ValueError("connection windows contradict terminal timing boundaries")
+        previous_closed = closed
 
 
 def _loaded_lifecycle_status(
@@ -2384,7 +2472,8 @@ def recover_d2_runtime_artifacts(
         next_data_path = data_path.with_name(f"{next_segment_id}.events.jsonl")
         next_checkpoint_path = data_path.with_name(f"{next_segment_id}.checkpoint.json")
         if not next_data_path.is_file() or not next_checkpoint_path.is_file():
-            raise ValueError("finalized rotation is missing its next open segment")
+            segment = finalized_record
+            break
         segment = {
             "segment_id": next_segment_id,
             "segment_closed": False,
@@ -2682,6 +2771,11 @@ def _source_type(counts: Counter[str]) -> str:
     if counts["trade"]:
         return "WEBSOCKET_PUBLIC_TRADE"
     return "WEBSOCKET_NO_ORDERBOOK"
+
+
+def _advance_frame_hash_chain(previous: object, frame_hash: str) -> str:
+    prefix = bytes.fromhex(str(previous)) if previous is not None else b""
+    return hashlib.sha256(prefix + bytes.fromhex(frame_hash)).hexdigest()
 
 
 def _selected_status(metadata: Mapping[str, object]) -> object:

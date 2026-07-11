@@ -31,6 +31,7 @@ from edmn_trader.adapters.kalshi.ws_runtime import (
     validate_d2_runtime_artifacts,
 )
 from edmn_trader.cli.monitor import build_monitor_snapshot
+from edmn_trader.data.evidence_durability import RotationReason
 from edmn_trader.data.evidence_policy import V2_THRESHOLD_POLICY
 from edmn_trader.scripts import v2_readonly_campaign
 
@@ -335,6 +336,48 @@ def test_actual_runtime_requires_acknowledgement_after_resubscription(
     assert summary["subscription_acknowledged"] is False
     assert summary["independent_evidence_classifications"]["subscription_status"] == "FAIL"
     assert len(summary["sequence_summaries"]) == 2
+
+
+def test_actual_runtime_accepts_split_public_channel_acknowledgments(tmp_path: Path) -> None:
+    fake_time = _FakeTime()
+    websocket = _FakeWebSocket(
+        [
+            {"type": "subscribed", "id": 1, "msg": {"channel": "orderbook_delta"}},
+            {"type": "subscribed", "id": 1, "msg": {"channel": "trade"}},
+            {
+                "type": "orderbook_snapshot",
+                "sid": 41,
+                "seq": 1,
+                "msg": {
+                    "market_ticker": MARKET,
+                    "yes_dollars_fp": [["0.42", "3"]],
+                    "no_dollars_fp": [],
+                },
+            },
+        ]
+    )
+
+    summary = run_d2_kalshi_ws_runtime(
+        output_dir=tmp_path / "run",
+        campaign_id="d2e-split-ack",
+        mode="read_only_websocket_smoke",
+        duration_seconds=300,
+        market_metadata={"ticker": MARKET, "status": "active"},
+        market_selection={"selection_gate_result": "pass"},
+        auth=KalshiWsAuthConfig(
+            api_key_id="fixture-id",
+            private_key_path=_private_key(tmp_path),
+        ),
+        provenance=RuntimeCodeProvenance(COMMIT, "main", "https://example.test/repo", False),
+        websocket_factory=lambda *_args, **_kwargs: websocket,
+        lifecycle_provider=lambda ticker: {"ticker": ticker, "status": "active"},
+        now=fake_time.now,
+        monotonic=fake_time.monotonic,
+        monotonic_ns=fake_time.monotonic_ns,
+    )
+
+    assert summary["subscription_acknowledged"] is True
+    assert validate_d2_runtime_artifacts(tmp_path / "run")["status"] == "pass"
 
 
 @pytest.mark.parametrize(
@@ -1185,6 +1228,76 @@ def test_validator_requires_contiguous_d2a_runtime_indices(tmp_path: Path) -> No
     assert any("D2A local row indices" in failure for failure in validation["failures"])
 
 
+def test_validator_rejects_reused_connection_identity(tmp_path: Path) -> None:
+    session = _session_without_connection(tmp_path, configured_duration_seconds=2)
+    for event_type, observed_at, segment_id in (
+        (ConnectionEvidenceType.CONNECTION_OPEN, START, "segment-1"),
+        (ConnectionEvidenceType.SUBSCRIPTION_ACKNOWLEDGED, START, "segment-2"),
+        (ConnectionEvidenceType.CONNECTION_CLOSE, START + timedelta(seconds=1), "segment-2"),
+        (ConnectionEvidenceType.RECONNECT, START + timedelta(seconds=1), "segment-3"),
+        (
+            ConnectionEvidenceType.SUBSCRIPTION_ACKNOWLEDGED,
+            START + timedelta(seconds=1),
+            "segment-4",
+        ),
+    ):
+        session.record_connection_event(
+            ConnectionEvidenceEvent(
+                event_type=event_type,
+                observed_at_utc=observed_at,
+                connection_id="reused-connection",
+                segment_id=segment_id,
+                reason="reused_connection_test",
+            )
+        )
+    session.close(
+        ended_at_utc=START + timedelta(seconds=2),
+        terminal_reason="bounded_duration_complete",
+        stop_requested=False,
+        connection_established=True,
+        subscription_acknowledged=True,
+        blocker_code=None,
+    )
+
+    validation = validate_d2_runtime_artifacts(tmp_path)
+    assert validation["status"] == "fail"
+    assert any("connection identifiers must be unique" in item for item in validation["failures"])
+
+
+def test_validator_rejects_connection_outside_terminal_interval(tmp_path: Path) -> None:
+    session = _session_without_connection(tmp_path, configured_duration_seconds=1)
+    session.record_connection_event(
+        ConnectionEvidenceEvent(
+            event_type=ConnectionEvidenceType.CONNECTION_OPEN,
+            observed_at_utc=START - timedelta(seconds=1),
+            connection_id="early-connection",
+            segment_id="early-segment",
+            reason="pre_runtime_connection",
+        )
+    )
+    session.record_connection_event(
+        ConnectionEvidenceEvent(
+            event_type=ConnectionEvidenceType.SUBSCRIPTION_ACKNOWLEDGED,
+            observed_at_utc=START,
+            connection_id="early-connection",
+            segment_id="subscription-segment",
+            reason="subscription_acknowledged",
+        )
+    )
+    session.close(
+        ended_at_utc=START + timedelta(seconds=1),
+        terminal_reason="bounded_duration_complete",
+        stop_requested=False,
+        connection_established=True,
+        subscription_acknowledged=True,
+        blocker_code=None,
+    )
+
+    validation = validate_d2_runtime_artifacts(tmp_path)
+    assert validation["status"] == "fail"
+    assert any("outside terminal timing" in item for item in validation["failures"])
+
+
 def test_validator_rejects_private_account_fields_in_runtime_metadata(tmp_path: Path) -> None:
     session = _session(tmp_path, configured_duration_seconds=1)
     session.close(
@@ -1277,6 +1390,105 @@ def test_runtime_rotation_uses_segment_local_chain_indices(tmp_path: Path) -> No
         assert [row["local_row_index"] for row in rows] == list(
             range(1, len(rows) + 1)
         )
+
+
+def test_runtime_open_status_and_rebuild_hash_memory_are_bounded(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    writes: list[Path] = []
+    real_atomic_write = ws_runtime._atomic_write_json
+
+    def counted_write(path: Path, payload) -> None:
+        writes.append(path)
+        real_atomic_write(path, payload)
+
+    monkeypatch.setattr(ws_runtime, "_atomic_write_json", counted_write)
+    session = RuntimeEvidenceSession(
+        output_dir=tmp_path,
+        campaign_id="d2e-bounded-runtime",
+        mode="read_only_websocket_campaign",
+        configured_duration_seconds=300,
+        selected_market_metadata={"ticker": MARKET, "status": "active"},
+        selected_market_selection={"selection_gate_result": "pass"},
+        lifecycle_mode_and_source="selected_market_rest_fallback",
+        pricing_mode_and_source="explicit",
+        provenance=RuntimeCodeProvenance(COMMIT, "main", "https://example.test/repo", False),
+        started_at_utc=START,
+        checkpoint_every_records=1_000,
+    )
+    tracker = KalshiWsIntegrityTracker(
+        campaign_id="d2e-bounded-runtime",
+        requested_market_tickers=(MARKET,),
+        continuity_policy=SequenceContinuityPolicy.CONTIGUOUS_INCREMENT,
+    )
+    tracker.start_connection()
+    tracker.bind_subscription(command_id=1)
+    for event_type, reason in (
+        (ConnectionEvidenceType.CONNECTION_OPEN, "bounded_connection_open"),
+        (ConnectionEvidenceType.SUBSCRIPTION_ACKNOWLEDGED, "bounded_subscription_ack"),
+    ):
+        session.record_connection_event(
+            ConnectionEvidenceEvent(
+                event_type=event_type,
+                observed_at_utc=START,
+                connection_id=tracker.connection_id,
+                segment_id=(
+                    "d2e-bounded-runtime:segment:0001"
+                    if event_type is ConnectionEvidenceType.CONNECTION_OPEN
+                    else tracker.segment_id
+                ),
+                reason=reason,
+            )
+        )
+    for index in range(1, 201):
+        payload = (
+            {
+                "type": "orderbook_snapshot",
+                "sid": 41,
+                "seq": index,
+                "msg": {
+                    "market_ticker": MARKET,
+                    "yes_dollars_fp": [["0.42", "3"]],
+                    "no_dollars_fp": [],
+                },
+            }
+            if index == 1
+            else {
+                "type": "orderbook_delta",
+                "sid": 41,
+                "seq": index,
+                "msg": {
+                    "market_ticker": MARKET,
+                    "side": "yes",
+                    "price_dollars": "0.42",
+                    "delta_fp": "1",
+                },
+            }
+        )
+        session.record_event(
+            tracker.record(
+                payload,
+                local_row_index=index,
+                received_at_utc=START,
+                received_monotonic_ns=index,
+            )
+        )
+    session.record_event(
+        tracker.record(
+            {"type": "heartbeat", "sid": 41, "seq": 201},
+            local_row_index=201,
+            received_at_utc=START + timedelta(seconds=61),
+            received_monotonic_ns=201,
+        )
+    )
+    rebuild_summary = session._rebuild_summary_records()[0]
+    session._writer._handle.close()
+
+    assert len(writes) == 4
+    assert "frame_hashes" not in rebuild_summary
+    assert len(rebuild_summary["frame_hash_chain"]) == 64
+    assert len(rebuild_summary["latest_frame_hash"]) == 64
 
 
 def test_runtime_crash_recovery_removes_only_partial_tail_and_never_restarts(
@@ -1535,6 +1747,47 @@ def test_runtime_recovers_rotation_finalized_before_manifest_sync(
     )
 
 
+@pytest.mark.parametrize("partial_successor", [False, True])
+def test_runtime_recovers_finalized_rotation_without_complete_successor(
+    tmp_path: Path,
+    partial_successor: bool,
+) -> None:
+    session = RuntimeEvidenceSession(
+        output_dir=tmp_path,
+        campaign_id="d2e-rotation-no-successor",
+        mode="read_only_websocket_smoke",
+        configured_duration_seconds=300,
+        selected_market_metadata={"ticker": MARKET, "status": "active"},
+        selected_market_selection={"selection_gate_result": "pass"},
+        lifecycle_mode_and_source="selected_market_rest_fallback",
+        pricing_mode_and_source="explicit",
+        provenance=RuntimeCodeProvenance(COMMIT, "main", "https://example.test/repo", False),
+        started_at_utc=START,
+    )
+    session._writer.close(
+        terminal_reason="rotation",
+        rotation_reason=RotationReason.BYTE_LIMIT,
+    )
+    if partial_successor:
+        successor = (
+            session.current_data_path.parent
+            / "d2e-rotation-no-successor.evidence.0002.events.jsonl"
+        )
+        successor.touch()
+
+    recovery = recover_d2_runtime_artifacts(
+        tmp_path,
+        recovered_at_utc=START + timedelta(seconds=2),
+    )
+    summary = json.loads((tmp_path / "campaign_summary.json").read_text())
+
+    assert recovery["validation_status"] == "pass"
+    assert summary["segment_summaries"][0]["terminal_reason"] == "rotation"
+    assert summary["segment_summaries"][0]["recovery_status"] == (
+        "FINALIZED_BEFORE_MANIFEST_SYNC"
+    )
+
+
 def test_validator_rebuilds_d2b_instead_of_trusting_persisted_frame(
     tmp_path: Path,
 ) -> None:
@@ -1608,7 +1861,7 @@ def test_validator_rejects_tampered_aggregate_rebuild_hashes(tmp_path: Path) -> 
     for name in ("campaign_summary.json", "campaign_manifest.json", "run_metadata.json"):
         path = tmp_path / name
         payload = json.loads(path.read_text())
-        payload["rebuild_summaries"][0]["frame_hashes"] = ["0" * 64]
+        payload["rebuild_summaries"][0]["frame_hash_chain"] = "0" * 64
         payload["rebuild_summaries"][0]["terminal_state_hash"] = "0" * 64
         path.write_text(json.dumps(payload) + "\n")
 

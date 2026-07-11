@@ -51,6 +51,10 @@ The latest adversarial correction also makes evidence callback failures
 terminal, binds D2A rows to ordered per-connection acknowledgments, rejects
 nonempty run roots and private metadata, collects provenance from the imported
 repository, and recovers finalization-to-manifest crash windows.
+Runtime memory and open-status writes are bounded: per-frame hashes stay in the
+chain while summaries keep only an aggregate/latest hash, and open metadata is
+updated on checkpoints, segment changes, or 60-second intervals. Split channel
+acknowledgments and rotation crashes before successor creation are covered.
 
 This checkpoint is software-only. Tests use mocked WebSocket and lifecycle
 transports. No VPS, credential, campaign, private raw data, production endpoint,

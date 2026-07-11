@@ -101,6 +101,11 @@ durable D2A row to an acknowledged open connection, requires contiguous D2A
 indices, derives provenance from the imported package repository, rejects
 nonempty artifact roots and private runtime metadata, and reconciles crashes
 between segment finalization and manifest synchronization, including rotation.
+The follow-up correction accepts a finalized rotation even if its successor
+was not fully created, distinguishes split subscription-control acknowledgments
+from data frames, validates unique in-bound connection windows, replaces
+unbounded frame-hash lists with a constant-size hash chain, and rate-limits
+open-status rewrites to checkpoints, segment changes, or 60-second intervals.
 
 ## D2D evidence classification, durability, and performance
 
