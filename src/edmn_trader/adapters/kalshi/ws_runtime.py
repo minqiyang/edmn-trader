@@ -75,6 +75,24 @@ _BAD_SEQUENCE_STATES = {
     SequenceState.RESYNC_REQUIRED,
     SequenceState.UNRECOVERED_GAP,
 }
+_REQUIRED_SEGMENT_SUMMARY_FIELDS = {
+    "schema_version",
+    "segment_id",
+    "segment_created",
+    "segment_closed",
+    "created_at_utc",
+    "closed_at_utc",
+    "terminal_reason",
+    "rotation_reason",
+    "integrity_scope",
+    "last_committed_local_row_index",
+    "byte_offset",
+    "genesis_hash",
+    "terminal_chain_hash",
+    "closed_file_sha256",
+    "backup_verification_state",
+    "retention_deletion_eligible",
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -223,6 +241,23 @@ def _default_lifecycle_provider(ticker: str) -> Mapping[str, object]:
         return client.get_market(ticker)
 
 
+def _preflight_dimensions() -> EvidenceDimensions:
+    return EvidenceDimensions(
+        artifact_integrity=EvidenceStatus.UNKNOWN,
+        transport_connectivity=EvidenceStatus.FAIL,
+        transport_keepalive=EvidenceStatus.UNKNOWN,
+        subscription_status=EvidenceStatus.FAIL,
+        sequence_integrity=EvidenceStatus.UNKNOWN,
+        rebuild_integrity=EvidenceStatus.UNKNOWN,
+        market_lifecycle_validity=EvidenceStatus.UNKNOWN,
+        duration_evidence=EvidenceStatus.FAIL,
+        process_liveness=EvidenceStatus.UNKNOWN,
+        supervisor_liveness=EvidenceStatus.UNKNOWN,
+        backup_integrity=EvidenceStatus.UNKNOWN,
+        replay_qualification=EvidenceStatus.UNKNOWN,
+    )
+
+
 def write_d2_runtime_preflight_block(
     *,
     output_dir: Path,
@@ -240,20 +275,8 @@ def write_d2_runtime_preflight_block(
     _require_aware(started_at_utc, "started_at_utc")
     root = Path(output_dir)
     root.mkdir(parents=True, exist_ok=True)
-    dimensions = EvidenceDimensions(
-        artifact_integrity=EvidenceStatus.UNKNOWN,
-        transport_connectivity=EvidenceStatus.FAIL,
-        transport_keepalive=EvidenceStatus.UNKNOWN,
-        subscription_status=EvidenceStatus.FAIL,
-        sequence_integrity=EvidenceStatus.UNKNOWN,
-        rebuild_integrity=EvidenceStatus.UNKNOWN,
-        market_lifecycle_validity=EvidenceStatus.UNKNOWN,
-        duration_evidence=EvidenceStatus.FAIL,
-        process_liveness=EvidenceStatus.UNKNOWN,
-        supervisor_liveness=EvidenceStatus.UNKNOWN,
-        backup_integrity=EvidenceStatus.UNKNOWN,
-        replay_qualification=EvidenceStatus.UNKNOWN,
-    )
+    dimensions = _preflight_dimensions()
+
     summary = {
         "runtime_schema_version": D2_RUNTIME_SCHEMA_VERSION,
         "schema_version": D2_RUNTIME_SCHEMA_VERSION,
@@ -1244,6 +1267,13 @@ def validate_d2_runtime_artifacts(input_dir: Path) -> dict[str, object]:
                 failures.append(f"segment summary artifact mismatch: {segment_id}")
             if segment_summary.get("closed_file_sha256") != digest:
                 failures.append(f"segment summary closed-file hash mismatch: {segment_id}")
+            expected_summary_fields = _REQUIRED_SEGMENT_SUMMARY_FIELDS | (
+                {"partial_tail_bytes_removed"}
+                if segment.get("recovery_status") == "CRASH_RECOVERED"
+                else set()
+            )
+            if set(segment_summary) != expected_summary_fields:
+                failures.append(f"segment summary field set mismatch: {segment_id}")
             for field, value in segment_summary.items():
                 if segment.get(field) != value:
                     failures.append(
@@ -1364,12 +1394,24 @@ def _validate_d2_preflight_block(
         failures.append("preflight blocker_code is required")
     if not isinstance(summary.get("selected_market_selection"), Mapping):
         failures.append("preflight selection provenance is required")
-    if (
-        validation.get("status") != "blocked"
-        or validation.get("blocker_code") != summary.get("blocker_code")
-        or validation.get("live_gate_status") != "disabled"
-        or validation.get("submit_attempts") != 0
-    ):
+    expected_validation = {
+        "runtime_schema_version": D2_RUNTIME_SCHEMA_VERSION,
+        "schema_version": D2_RUNTIME_SCHEMA_VERSION,
+        "status": "blocked",
+        "campaign_id": summary.get("campaign_id"),
+        "blocker_code": summary.get("blocker_code"),
+        **_preflight_dimensions().to_record(),
+        "overall_evidence_classification": "FAIL",
+        "source_type": "WEBSOCKET_NO_ORDERBOOK",
+        "event_count": 0,
+        "snapshot_count": 0,
+        "delta_count": 0,
+        "trade_count": 0,
+        "live_gate_status": "disabled",
+        "submit_attempts": 0,
+        "strict_verdict": "STRICT NO-GO",
+    }
+    if validation != expected_validation:
         failures.append("preflight validation artifact contradicts summary")
     if failures:
         result = {
@@ -1380,7 +1422,7 @@ def _validate_d2_preflight_block(
         }
         _atomic_write_json(root / "campaign_validation.json", result)
         return result
-    return validation
+    return expected_validation
 
 
 def _validate_runtime_records(

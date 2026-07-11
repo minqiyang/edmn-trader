@@ -1348,14 +1348,15 @@ def test_validator_compares_every_persisted_segment_summary_field(tmp_path: Path
         blocker_code=None,
     )
     segment_summary_path = tmp_path / summary["segment_summaries"][0]["summary_path"]
-    segment_summary = json.loads(segment_summary_path.read_text())
-    segment_summary["terminal_reason"] = "tampered"
-    segment_summary_path.write_text(json.dumps(segment_summary) + "\n")
-
-    validation = validate_d2_runtime_artifacts(tmp_path)
-
-    assert validation["status"] == "fail"
-    assert any("terminal_reason" in item for item in validation["failures"])
+    baseline = json.loads(segment_summary_path.read_text())
+    for delete_field in (False, True):
+        segment_summary = dict(baseline)
+        if delete_field:
+            del segment_summary["terminal_reason"]
+        else:
+            segment_summary["terminal_reason"] = "tampered"
+        segment_summary_path.write_text(json.dumps(segment_summary) + "\n")
+        assert validate_d2_runtime_artifacts(tmp_path)["status"] == "fail"
 
 
 def test_validator_semantically_reconstructs_all_d2c_evidence(tmp_path: Path) -> None:

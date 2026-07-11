@@ -950,6 +950,16 @@ def test_kalshi_ws_smoke_truthfully_blocks_without_credentials(
     assert snapshot["campaign"]["status"] == "WEBSOCKET_AUTH_BLOCKED"
     assert snapshot["campaign"]["source_type"] == "WEBSOCKET_NO_ORDERBOOK"
     assert "validation=blocked" in rendered
+    validation.update(
+        campaign_id="tampered",
+        event_count=99,
+        overall_evidence_classification="PASS",
+    )
+    (tmp_path / "campaign_validation.json").write_text(
+        json.dumps(validation) + "\n",
+        encoding="utf-8",
+    )
+    assert validate_campaign(input_dir=tmp_path)["status"] == "fail"
 
 
 def test_validator_classifies_websocket_smoke_only_when_ws_events_exist(
