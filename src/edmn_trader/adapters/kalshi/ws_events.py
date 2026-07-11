@@ -345,6 +345,18 @@ class KalshiWsIntegrityTracker:
         self._snapshot_market_tickers: set[str] = set()
         self._last_native_seq: int | None = None
 
+    @property
+    def connection_id(self) -> str:
+        if self._connection_id is None:
+            raise RuntimeError("no active connection")
+        return self._connection_id
+
+    @property
+    def segment_id(self) -> str:
+        if self._segment_id is None:
+            raise RuntimeError("no active segment")
+        return self._segment_id
+
     def start_connection(self) -> None:
         self._connection_number += 1
         reason = (

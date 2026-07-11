@@ -8,6 +8,7 @@ import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 
+from edmn_trader.adapters.kalshi.public_evidence import ConnectionEvidenceType
 from edmn_trader.adapters.kalshi.ws_auth import KalshiWsAuthConfig
 from edmn_trader.adapters.kalshi.ws_events import (
     KALSHI_WS_RAW_SCHEMA_VERSION,
@@ -94,6 +95,7 @@ def test_ws_recorder_reconnects_after_read_failure_with_existing_rows(
         _FailingWebSocket([{"type": "subscribed", "id": 1}]),
         _FakeWebSocket([{"type": "orderbook_delta", "market_ticker": "DEMO-MARKET"}]),
     ]
+    connection_events = []
 
     result = record_kalshi_demo_ws_orderbook(
         KalshiWsRecorderConfig(
@@ -107,6 +109,7 @@ def test_ws_recorder_reconnects_after_read_failure_with_existing_rows(
         KalshiWsAuthConfig(api_key_id="fake", private_key_path=key_path),
         websocket_factory=lambda *_args, **_kwargs: websockets.pop(0),
         now=lambda: datetime(2026, 7, 3, 20, 0, tzinfo=UTC),
+        connection_callback=connection_events.append,
     )
 
     assert result.status == "ok"
@@ -123,6 +126,15 @@ def test_ws_recorder_reconnects_after_read_failure_with_existing_rows(
     assert records[1]["segment_boundary_reason"] == SegmentBoundaryReason.RESUBSCRIPTION
     assert records[1]["admission_status"] == AdmissionStatus.EXCLUDED
     assert records[1]["exclusion_reason"] == ExclusionReason.DELTA_BEFORE_SNAPSHOT
+    assert [event.event_type for event in connection_events] == [
+        ConnectionEvidenceType.CONNECTION_OPEN,
+        ConnectionEvidenceType.CONNECTION_ERROR,
+        ConnectionEvidenceType.CONNECTION_CLOSE,
+        ConnectionEvidenceType.RECONNECT,
+        ConnectionEvidenceType.RESUBSCRIPTION,
+        ConnectionEvidenceType.CONNECTION_CLOSE,
+    ]
+    assert connection_events[3].previous_connection_id == connection_events[0].connection_id
 
 
 @pytest.mark.parametrize("raw", ["[]", "null", "1"])

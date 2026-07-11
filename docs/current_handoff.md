@@ -17,6 +17,21 @@ requires complete event metadata, rejects sports/match-like and early-close
 markets, and persists profile provenance in the manifest. This remains Kalshi
 Demo read-only with the public live gate disabled and no order-write behavior.
 
+## D2E runtime integration notice
+
+D2E closes the fail-closed runtime assembly gap found by the owner-controlled
+Real5M preflight. New `kalshi-ws-smoke` and `kalshi-ws-campaign` runs select
+`edmn.kalshi.ws.runtime.v2`, route D2A envelopes through D2B/D2C, persist exact
+runtime records through D2D, and expose independent timing, freshness,
+sequence, rebuild, lifecycle, durability, and safety dimensions to the
+validator and monitor. Legacy `v2.readonly_campaign.v1` remains readable but
+is not selected for new WebSocket runs.
+
+This checkpoint is software-only. Tests use mocked WebSocket and lifecycle
+transports. No VPS, credential, campaign, private raw data, production endpoint,
+order path, or real market network was used. Replay qualification remains
+unknown/false and the public live gate remains disabled.
+
 ## D2D classifier and durability notice
 
 As of 2026-07-10, Phase 0A has passed and `origin/main` remains the authoritative
@@ -104,10 +119,9 @@ gates.
 
 ## Last completed stage
 
-Stage 52 private live gate design and disabled public guard, Round 8B public
-lifecycle gates, Round 8C-D1 bounded Demo market discovery, merged D2A raw
-WebSocket evidence, merged D2B native incremental rebuild PR #121, and merged
-D2C public evidence PR #122.
+D2A-D2D are merged. D2E integrates those contracts into the reviewed read-only
+runtime entrypoint with mocked end-to-end coverage and retains the disabled-live
+boundary. Deployment and any Real5M authorization remain separate owner gates.
 
 ## Current delivery checkpoint
 
@@ -1564,3 +1578,14 @@ deadlines, fetches event metadata for seven-day discovery, rejects unsafe
 early-close and sports/match candidates by default, preserves lifecycle fields
 in manifests, and separates data integrity from market-lifecycle evidence
 validity. Validation remains Demo/read-only with the public live gate disabled.
+
+## D2E next boundary
+
+After D2E merge and clean merged-main verification, the next task is a fresh
+Phase 0B deployment-governance run for the merged D2E commit. It may deploy and
+run software-only validation/benchmarks, but must stop before credentials or
+market network. Any future Real5M requires a new explicit owner authorization;
+the prior authorization was not consumed.
+
+Exact next prompt title:
+`Phase 0B-Resume D2E Deployment Governance and VPS Synthetic Acceptance`.

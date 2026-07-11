@@ -16,6 +16,13 @@ numbers while the repository is still in early research scaffolding.
   conservative early-close rejection, structured reasons, and manifest
   provenance. Smoke and seven-day behavior remain separate; Demo-only and
   disabled-live-gate boundaries are unchanged.
+- Wired D2A-D2D into the reviewed Kalshi read-only WebSocket runtime. New smoke
+  and campaign runs emit `edmn.kalshi.ws.runtime.v2` artifacts with D2A
+  admission, D2B rebuild hashes, D2C public/lifecycle/connection evidence, D2D
+  append-chain durability, timestamp-derived timing, threshold provenance,
+  independent validator/monitor dimensions, rotation, and fail-closed crash
+  recovery. Legacy v1 artifacts remain readable but are not selected for new
+  WebSocket runs. Tests are mocked and public live trading remains disabled.
 - Added D2D orthogonal evidence classification, timestamp-derived duration,
   exact UTF-8 append chains, atomic fsynced checkpoints/summaries, closed-file
   hashing, byte/time rotation, partial-tail crash recovery, fresh-segment reset

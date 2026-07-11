@@ -1,0 +1,894 @@
+from __future__ import annotations
+
+import json
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
+from pathlib import Path
+from typing import Any
+
+import pytest
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
+
+from edmn_trader.adapters.kalshi.ws_auth import KalshiWsAuthConfig
+from edmn_trader.adapters.kalshi.ws_events import (
+    KalshiWsIntegrityTracker,
+    SequenceContinuityPolicy,
+)
+from edmn_trader.adapters.kalshi.ws_runtime import (
+    D2_RUNTIME_SCHEMA_VERSION,
+    RuntimeCodeProvenance,
+    RuntimeEvidenceSession,
+    recover_d2_runtime_artifacts,
+    run_d2_kalshi_ws_runtime,
+    validate_d2_runtime_artifacts,
+)
+from edmn_trader.cli.monitor import build_monitor_snapshot
+from edmn_trader.data.evidence_policy import V2_THRESHOLD_POLICY
+from edmn_trader.scripts import v2_readonly_campaign
+
+MARKET = "D2E-MARKET"
+START = datetime(2026, 7, 11, 0, 0, tzinfo=UTC)
+COMMIT = "012ea1e6feee4e54b2ac92014822f452361d30f8"
+
+
+def test_reviewed_threshold_policy_is_single_versioned_runtime_contract() -> None:
+    assert V2_THRESHOLD_POLICY.to_record() == {
+        "threshold_policy_version": "edmn.v2.thresholds.v1",
+        "threshold_effective_utc": "2026-07-10T02:24:00+00:00",
+        "minimum_connection_coverage": "0.95",
+        "maximum_disconnect_seconds": 15,
+        "maximum_lifecycle_age_seconds": 120,
+        "orderbook_quiet_warning_seconds": 300,
+        "maximum_transport_keepalive_age_seconds": 120,
+    }
+
+
+def test_actual_runtime_assembly_uses_d2_writer_and_mocked_transports(
+    tmp_path: Path,
+) -> None:
+    fake_time = _FakeTime()
+    websocket = _FakeWebSocket(
+        [
+            {"type": "subscribed", "id": 1, "sid": 41, "msg": {"use_yes_price": False}},
+            {
+                "type": "orderbook_snapshot",
+                "sid": 41,
+                "seq": 1,
+                "msg": {
+                    "market_ticker": MARKET,
+                    "yes_dollars_fp": [["0.42", "3"]],
+                    "no_dollars_fp": [["0.56", "5"]],
+                },
+            },
+            {
+                "type": "orderbook_delta",
+                "sid": 41,
+                "seq": 2,
+                "msg": {
+                    "market_ticker": MARKET,
+                    "side": "yes",
+                    "price_dollars": "0.42",
+                    "delta_fp": "1",
+                },
+            },
+            {
+                "type": "trade",
+                "sid": 41,
+                "seq": 3,
+                "msg": {"market_ticker": MARKET, "trade_id": "trade-1"},
+            },
+        ]
+    )
+    key_path = _private_key(tmp_path)
+
+    summary = run_d2_kalshi_ws_runtime(
+        output_dir=tmp_path / "run",
+        campaign_id="d2e-runtime-network-mock",
+        mode="read_only_websocket_smoke",
+        duration_seconds=300,
+        market_metadata={"ticker": MARKET, "status": "active"},
+        auth=KalshiWsAuthConfig(api_key_id="fixture-id", private_key_path=key_path),
+        provenance=RuntimeCodeProvenance(COMMIT, "main", "https://example.test/repo", False),
+        websocket_factory=lambda *_args, **_kwargs: websocket,
+        lifecycle_provider=lambda ticker: {"ticker": ticker, "status": "active"},
+        now=fake_time.now,
+        monotonic=fake_time.monotonic,
+        monotonic_ns=fake_time.monotonic_ns,
+    )
+
+    assert summary["runtime_schema_version"] == D2_RUNTIME_SCHEMA_VERSION
+    assert Decimal(summary["actual_elapsed_seconds"]) >= 300
+    assert summary["event_count"] == 4
+    assert summary["snapshot_count"] == 1
+    assert summary["delta_count"] == 1
+    assert summary["public_trade_count"] == 1
+    assert summary["connection_event_count"] >= 2
+    assert summary["lifecycle_observation_count"] >= 3
+    assert summary["max_lifecycle_observation_age_seconds"] <= 120
+    assert summary["freshness_dimensions"]["transport_keepalive_status"] == (
+        "UNKNOWN_NOT_OBSERVED"
+    )
+    assert not (tmp_path / "run" / "kalshi_ws_raw_events.jsonl").exists()
+    monitor = build_monitor_snapshot(
+        tmp_path / "run",
+        now=datetime.fromisoformat(summary["ended_at"]),
+    )
+    assert monitor["run_info"]["health"] == "WARNING"
+    assert monitor["run_info"]["health"] != "OK_PAPER"
+
+
+def test_public_smoke_entrypoint_cannot_select_legacy_writer(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    fake_time = _FakeTime()
+    websocket = _FakeWebSocket(
+        [
+            {"type": "subscribed", "id": 1, "sid": 41},
+            {
+                "type": "orderbook_snapshot",
+                "sid": 41,
+                "seq": 1,
+                "msg": {
+                    "market_ticker": MARKET,
+                    "yes_dollars_fp": [["0.42", "3"]],
+                    "no_dollars_fp": [],
+                },
+            },
+        ]
+    )
+    auth = KalshiWsAuthConfig(
+        api_key_id="fixture-id",
+        private_key_path=_private_key(tmp_path),
+    )
+    monkeypatch.setattr(v2_readonly_campaign, "load_kalshi_ws_auth_config_from_env", lambda: auth)
+    monkeypatch.setattr(
+        v2_readonly_campaign,
+        "discover_kalshi_demo_ws_market",
+        lambda **_kwargs: {
+            "market_metadata": {"ticker": MARKET, "status": "active"},
+            "selection": {"selection_gate_result": "pass"},
+            "blocker_code": None,
+        },
+    )
+    real_runtime = run_d2_kalshi_ws_runtime
+
+    def mocked_runtime(**kwargs: Any) -> dict[str, object]:
+        return real_runtime(
+            **kwargs,
+            websocket_factory=lambda *_args, **_kwargs: websocket,
+            lifecycle_provider=lambda ticker: {"ticker": ticker, "status": "active"},
+            now=fake_time.now,
+            monotonic=fake_time.monotonic,
+            monotonic_ns=fake_time.monotonic_ns,
+        )
+
+    monkeypatch.setattr(v2_readonly_campaign, "run_d2_kalshi_ws_runtime", mocked_runtime)
+    monkeypatch.setattr(
+        v2_readonly_campaign,
+        "_write_kalshi_ws_summary",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("legacy writer selected")),
+    )
+
+    summary = v2_readonly_campaign.run_kalshi_ws_smoke(
+        output_dir=tmp_path / "run",
+        campaign_id="d2e-public-entrypoint",
+        duration_seconds=300,
+        max_markets=1,
+    )
+
+    assert summary["runtime_schema_version"] == D2_RUNTIME_SCHEMA_VERSION
+    assert summary["schema_version"] != "v2.readonly_campaign.v1"
+
+
+def test_runtime_session_wires_d2_pipeline_and_closes_verified_artifacts(
+    tmp_path: Path,
+) -> None:
+    session = _session(tmp_path, configured_duration_seconds=300)
+    tracker = _tracker()
+    events = [
+        tracker.record(
+            {
+                "type": "subscribed",
+                "id": 1,
+                "sid": 41,
+                "msg": {"channel": "orderbook_delta", "use_yes_price": False},
+            },
+            local_row_index=1,
+            received_at_utc=START + timedelta(seconds=1),
+            received_monotonic_ns=1,
+        ),
+        tracker.record(
+            {
+                "type": "orderbook_snapshot",
+                "sid": 41,
+                "seq": 100,
+                "msg": {
+                    "market_ticker": MARKET,
+                    "yes_dollars_fp": [["0.42", "3"]],
+                    "no_dollars_fp": [["0.56", "5"]],
+                },
+            },
+            local_row_index=2,
+            received_at_utc=START + timedelta(seconds=2),
+            received_monotonic_ns=2,
+        ),
+        tracker.record(
+            {
+                "type": "orderbook_delta",
+                "sid": 41,
+                "seq": 101,
+                "msg": {
+                    "market_ticker": MARKET,
+                    "side": "yes",
+                    "price_dollars": "0.42",
+                    "delta_fp": "1",
+                },
+            },
+            local_row_index=3,
+            received_at_utc=START + timedelta(seconds=3),
+            received_monotonic_ns=3,
+        ),
+        tracker.record(
+            {
+                "type": "trade",
+                "sid": 41,
+                "seq": 102,
+                "msg": {
+                    "market_ticker": MARKET,
+                    "trade_id": "trade-1",
+                    "yes_price_dollars": "0.43",
+                    "count_fp": "2",
+                },
+            },
+            local_row_index=4,
+            received_at_utc=START + timedelta(seconds=4),
+            received_monotonic_ns=4,
+        ),
+    ]
+
+    session.record_lifecycle(
+        {"ticker": MARKET, "status": "active"},
+        observed_at_utc=START,
+        evaluated_at_utc=START,
+    )
+    for event in events:
+        session.record_event(event)
+    session.record_lifecycle(
+        {"ticker": MARKET, "status": "active"},
+        observed_at_utc=START + timedelta(seconds=300),
+        evaluated_at_utc=START + timedelta(seconds=300),
+    )
+    summary = session.close(
+        ended_at_utc=START + timedelta(seconds=300),
+        terminal_reason="bounded_duration_complete",
+        stop_requested=False,
+        connection_established=True,
+        subscription_acknowledged=True,
+        blocker_code=None,
+    )
+
+    assert summary["runtime_schema_version"] == D2_RUNTIME_SCHEMA_VERSION
+    assert summary["raw_event_schema_version"] == "edmn.kalshi.ws.raw.v2"
+    assert summary["threshold_policy_version"] == "edmn.v2.thresholds.v1"
+    assert summary["actual_elapsed_seconds"] == "300"
+    assert summary["public_trade_count"] == 1
+    assert summary["rebuild_summaries"][0]["frame_count"] == 2
+    assert summary["rebuild_summaries"][0]["pricing_modes"] == ["LEGACY_SIDE_PRICE"]
+    assert summary["independent_evidence_classifications"]["duration_evidence"] == "PASS"
+    assert summary["independent_evidence_classifications"]["replay_qualification"] == "UNKNOWN"
+    assert summary["artifact_integrity_summary"]["append_chain_verified"] is True
+    assert summary["artifact_integrity_summary"]["closed_file_hash_verified"] is True
+    validation = validate_d2_runtime_artifacts(tmp_path)
+    assert validation["status"] == "pass"
+    assert validation["artifact_integrity"] == "PASS"
+    assert validation["replay_qualification"] == "UNKNOWN"
+    monitor = build_monitor_snapshot(tmp_path, now=START + timedelta(seconds=301))
+    assert monitor["campaign"]["runtime_schema_version"] == D2_RUNTIME_SCHEMA_VERSION
+    assert monitor["evidence"]["dimensions"]["rebuild_integrity"] == "PASS"
+    assert monitor["evidence"]["replay_qualified"] is False
+    assert monitor["validation"]["artifact_integrity"] == "PASS"
+
+
+def test_runtime_preserves_unknown_sequence_and_excluded_delta(tmp_path: Path) -> None:
+    session = _session(tmp_path, configured_duration_seconds=1)
+    tracker = _tracker()
+    delta = tracker.record(
+        {
+            "type": "orderbook_delta",
+            "sid": 41,
+            "seq": 10,
+            "msg": {
+                "market_ticker": MARKET,
+                "side": "yes",
+                "price_dollars": "0.42",
+                "delta_fp": "1",
+            },
+        },
+        local_row_index=1,
+        received_at_utc=START,
+        received_monotonic_ns=1,
+    )
+
+    session.record_event(delta)
+    summary = session.close(
+        ended_at_utc=START + timedelta(seconds=1),
+        terminal_reason="bounded_duration_complete",
+        stop_requested=False,
+        connection_established=True,
+        subscription_acknowledged=True,
+        blocker_code=None,
+    )
+
+    assert summary["raw_event_count"] == 1
+    assert summary["rebuild_frame_count"] == 0
+    assert summary["rebuild_excluded_count"] == 1
+    assert summary["independent_evidence_classifications"]["sequence_integrity"] == "UNKNOWN"
+    assert summary["independent_evidence_classifications"]["rebuild_integrity"] == "UNKNOWN"
+
+
+def test_snapshot_only_runtime_preserves_rebuild_pass_but_fails_early_duration(
+    tmp_path: Path,
+) -> None:
+    session = _session(tmp_path, configured_duration_seconds=300)
+    tracker = _tracker()
+    snapshot = tracker.record(
+        {
+            "type": "orderbook_snapshot",
+            "sid": 41,
+            "seq": 1,
+            "msg": {
+                "market_ticker": MARKET,
+                "yes_dollars_fp": [["0.42", "3"]],
+                "no_dollars_fp": [],
+            },
+        },
+        local_row_index=1,
+        received_at_utc=START + timedelta(seconds=1),
+        received_monotonic_ns=1,
+    )
+    session.record_lifecycle(
+        {"ticker": MARKET, "status": "active"},
+        observed_at_utc=START,
+        evaluated_at_utc=START,
+    )
+    session.record_event(snapshot)
+    summary = session.close(
+        ended_at_utc=START + timedelta(seconds=100),
+        terminal_reason="early_exit",
+        stop_requested=False,
+        connection_established=True,
+        subscription_acknowledged=True,
+        blocker_code=None,
+    )
+
+    assert summary["snapshot_count"] == 1
+    assert summary["delta_count"] == 0
+    assert summary["independent_evidence_classifications"]["rebuild_integrity"] == "PASS"
+    assert summary["independent_evidence_classifications"]["duration_evidence"] == "FAIL"
+
+
+def test_explicit_sequence_gap_is_excluded_then_resynced_by_new_snapshot(
+    tmp_path: Path,
+) -> None:
+    session = _session(tmp_path, configured_duration_seconds=4)
+    tracker = _tracker(continuity_policy=SequenceContinuityPolicy.CONTIGUOUS_INCREMENT)
+    payloads = [
+        {
+            "type": "orderbook_snapshot",
+            "sid": 41,
+            "seq": 1,
+            "msg": {
+                "market_ticker": MARKET,
+                "yes_dollars_fp": [["0.42", "3"]],
+                "no_dollars_fp": [],
+            },
+        },
+        {
+            "type": "orderbook_delta",
+            "sid": 41,
+            "seq": 3,
+            "msg": {
+                "market_ticker": MARKET,
+                "side": "yes",
+                "price_dollars": "0.42",
+                "delta_fp": "1",
+            },
+        },
+        {
+            "type": "orderbook_snapshot",
+            "sid": 41,
+            "seq": 4,
+            "msg": {
+                "market_ticker": MARKET,
+                "yes_dollars_fp": [["0.43", "2"]],
+                "no_dollars_fp": [],
+            },
+        },
+    ]
+    for index, payload in enumerate(payloads, start=1):
+        session.record_event(
+            tracker.record(
+                payload,
+                local_row_index=index,
+                received_at_utc=START + timedelta(seconds=index),
+                received_monotonic_ns=index,
+            )
+        )
+    summary = session.close(
+        ended_at_utc=START + timedelta(seconds=4),
+        terminal_reason="bounded_duration_complete",
+        stop_requested=False,
+        connection_established=True,
+        subscription_acknowledged=True,
+        blocker_code=None,
+    )
+
+    assert summary["independent_evidence_classifications"]["sequence_integrity"] == "FAIL"
+    assert summary["rebuild_frame_count"] == 2
+    assert summary["rebuild_excluded_count"] == 1
+    assert len(summary["sequence_summaries"]) == 2
+    assert any(
+        item["aggregate_result"] == "SEQUENCE_INTEGRITY_FAIL"
+        for item in summary["sequence_summaries"]
+    )
+
+
+@pytest.mark.parametrize(
+    ("second_sequence", "expected_state"),
+    [(5, "SEQUENCE_DUPLICATE"), (4, "SEQUENCE_OUT_OF_ORDER")],
+)
+def test_runtime_preserves_duplicate_and_out_of_order_states(
+    tmp_path: Path,
+    second_sequence: int,
+    expected_state: str,
+) -> None:
+    session = _session(tmp_path, configured_duration_seconds=2)
+    tracker = _tracker(continuity_policy=SequenceContinuityPolicy.CONTIGUOUS_INCREMENT)
+    events = [
+        tracker.record(
+            {
+                "type": "orderbook_snapshot",
+                "sid": 41,
+                "seq": 5,
+                "msg": {
+                    "market_ticker": MARKET,
+                    "yes_dollars_fp": [["0.42", "3"]],
+                    "no_dollars_fp": [],
+                },
+            },
+            local_row_index=1,
+            received_at_utc=START,
+            received_monotonic_ns=1,
+        ),
+        tracker.record(
+            {
+                "type": "orderbook_delta",
+                "sid": 41,
+                "seq": second_sequence,
+                "msg": {
+                    "market_ticker": MARKET,
+                    "side": "yes",
+                    "price_dollars": "0.42",
+                    "delta_fp": "1",
+                },
+            },
+            local_row_index=2,
+            received_at_utc=START + timedelta(seconds=1),
+            received_monotonic_ns=2,
+        ),
+    ]
+    for event in events:
+        session.record_event(event)
+    summary = session.close(
+        ended_at_utc=START + timedelta(seconds=2),
+        terminal_reason="bounded_duration_complete",
+        stop_requested=False,
+        connection_established=True,
+        subscription_acknowledged=True,
+        blocker_code=None,
+    )
+
+    states = summary["sequence_summaries"][0]["sequence_states"]
+    assert states[expected_state] == 1
+    assert summary["rebuild_excluded_count"] == 1
+    assert summary["independent_evidence_classifications"]["sequence_integrity"] == "FAIL"
+
+
+def test_sid_change_creates_a_new_isolated_runtime_segment(tmp_path: Path) -> None:
+    session = _session(tmp_path, configured_duration_seconds=2)
+    tracker = _tracker()
+    for index, sid in enumerate((41, 42), start=1):
+        session.record_event(
+            tracker.record(
+                {
+                    "type": "orderbook_snapshot",
+                    "sid": sid,
+                    "seq": index,
+                    "msg": {
+                        "market_ticker": MARKET,
+                        "yes_dollars_fp": [["0.42", str(index)]],
+                        "no_dollars_fp": [],
+                    },
+                },
+                local_row_index=index,
+                received_at_utc=START + timedelta(seconds=index - 1),
+                received_monotonic_ns=index,
+            )
+        )
+    summary = session.close(
+        ended_at_utc=START + timedelta(seconds=2),
+        terminal_reason="bounded_duration_complete",
+        stop_requested=False,
+        connection_established=True,
+        subscription_acknowledged=True,
+        blocker_code=None,
+    )
+
+    assert len(summary["sequence_summaries"]) == 2
+    assert summary["sequence_summaries"][1]["segment_boundary_reasons"] == ["SID_CHANGE"]
+    assert len([item for item in summary["rebuild_summaries"] if item["frame_count"]]) == 2
+
+
+def test_runtime_keeps_two_markets_isolated_and_records_explicit_pricing_modes(
+    tmp_path: Path,
+) -> None:
+    other = "D2E-OTHER"
+    session = _session(tmp_path, configured_duration_seconds=3)
+    tracker = _tracker(markets=(MARKET, other))
+    events = [
+        tracker.record(
+            {
+                "type": "subscribed",
+                "id": 1,
+                "sid": 41,
+                "msg": {"use_yes_price": True},
+            },
+            local_row_index=1,
+            received_at_utc=START,
+            received_monotonic_ns=1,
+        ),
+        *[
+            tracker.record(
+                {
+                    "type": "orderbook_snapshot",
+                    "sid": 41,
+                    "seq": index,
+                    "msg": {
+                        "market_ticker": market,
+                        "yes_dollars_fp": [["0.42", str(index)]],
+                        "no_dollars_fp": [],
+                    },
+                },
+                local_row_index=index,
+                received_at_utc=START + timedelta(seconds=index),
+                received_monotonic_ns=index,
+            )
+            for index, market in enumerate((MARKET, other), start=2)
+        ],
+    ]
+    for event in events:
+        session.record_event(event)
+    summary = session.close(
+        ended_at_utc=START + timedelta(seconds=3),
+        terminal_reason="bounded_duration_complete",
+        stop_requested=False,
+        connection_established=True,
+        subscription_acknowledged=True,
+        blocker_code=None,
+    )
+
+    rebuilt = [item for item in summary["rebuild_summaries"] if item["frame_count"]]
+    assert {item["market_ticker"] for item in rebuilt} == {MARKET, other}
+    assert all(item["pricing_modes"] == ["UNIFIED_YES_PRICE"] for item in rebuilt)
+    assert len({item["terminal_state_hash"] for item in rebuilt}) == 2
+
+
+def test_runtime_pricing_mode_conflict_invalidates_rebuild_dimension(tmp_path: Path) -> None:
+    session = _session(tmp_path, configured_duration_seconds=2)
+    tracker = _tracker()
+    events = [
+        tracker.record(
+            {"type": "subscribed", "id": 1, "sid": 41, "msg": {"use_yes_price": False}},
+            local_row_index=1,
+            received_at_utc=START,
+            received_monotonic_ns=1,
+        ),
+        tracker.record(
+            {
+                "type": "orderbook_snapshot",
+                "sid": 41,
+                "seq": 1,
+                "msg": {
+                    "market_ticker": MARKET,
+                    "use_yes_price": True,
+                    "yes_dollars_fp": [["0.42", "3"]],
+                    "no_dollars_fp": [],
+                },
+            },
+            local_row_index=2,
+            received_at_utc=START + timedelta(seconds=1),
+            received_monotonic_ns=2,
+        ),
+    ]
+    for event in events:
+        session.record_event(event)
+    summary = session.close(
+        ended_at_utc=START + timedelta(seconds=2),
+        terminal_reason="bounded_duration_complete",
+        stop_requested=False,
+        connection_established=True,
+        subscription_acknowledged=True,
+        blocker_code=None,
+    )
+
+    assert summary["rebuild_frame_count"] == 0
+    assert summary["independent_evidence_classifications"]["rebuild_integrity"] == "FAIL"
+    assert any(
+        "CONTRADICTORY_PRICING_MODE" in item["invalidation_reasons"]
+        for item in summary["rebuild_summaries"]
+    )
+
+
+def test_quiet_orderbook_does_not_become_transport_loss_and_lifecycle_stays_fresh(
+    tmp_path: Path,
+) -> None:
+    session = _session(tmp_path, configured_duration_seconds=301)
+    tracker = _tracker()
+    session.record_event(
+        tracker.record(
+            {
+                "type": "orderbook_snapshot",
+                "sid": 41,
+                "seq": 1,
+                "msg": {
+                    "market_ticker": MARKET,
+                    "yes_dollars_fp": [["0.42", "3"]],
+                    "no_dollars_fp": [],
+                },
+            },
+            local_row_index=1,
+            received_at_utc=START,
+            received_monotonic_ns=1,
+        )
+    )
+    for seconds in (0, 60, 120, 180, 240, 300):
+        observed = START + timedelta(seconds=seconds)
+        session.record_lifecycle(
+            {"ticker": MARKET, "status": "active"},
+            observed_at_utc=observed,
+            evaluated_at_utc=observed,
+        )
+    summary = session.close(
+        ended_at_utc=START + timedelta(seconds=301),
+        terminal_reason="bounded_duration_complete",
+        stop_requested=False,
+        connection_established=True,
+        subscription_acknowledged=True,
+        blocker_code=None,
+    )
+
+    assert summary["freshness_dimensions"]["transport_keepalive_status"] == (
+        "UNKNOWN_NOT_OBSERVED"
+    )
+    assert summary["freshness_dimensions"]["orderbook_event_quiet_interval_seconds"] == 301
+    assert summary["independent_evidence_classifications"]["transport_connectivity"] == "PASS"
+    assert summary["independent_evidence_classifications"]["market_lifecycle_validity"] == "PASS"
+
+
+def test_closed_and_stale_lifecycle_fail_independently(tmp_path: Path) -> None:
+    closed = _session(tmp_path / "closed", configured_duration_seconds=1)
+    closed.record_lifecycle(
+        {"ticker": MARKET, "status": "finalized"},
+        observed_at_utc=START + timedelta(seconds=1),
+        evaluated_at_utc=START + timedelta(seconds=1),
+    )
+    closed_summary = closed.close(
+        ended_at_utc=START + timedelta(seconds=1),
+        terminal_reason="bounded_duration_complete",
+        stop_requested=False,
+        connection_established=False,
+        subscription_acknowledged=False,
+        blocker_code=None,
+    )
+    stale = _session(tmp_path / "stale", configured_duration_seconds=121)
+    stale.record_lifecycle(
+        {"ticker": MARKET, "status": "active"},
+        observed_at_utc=START,
+        evaluated_at_utc=START,
+    )
+    stale_summary = stale.close(
+        ended_at_utc=START + timedelta(seconds=121),
+        terminal_reason="bounded_duration_complete",
+        stop_requested=False,
+        connection_established=False,
+        subscription_acknowledged=False,
+        blocker_code=None,
+    )
+
+    assert closed_summary["independent_evidence_classifications"][
+        "market_lifecycle_validity"
+    ] == "FAIL"
+    assert stale_summary["independent_evidence_classifications"][
+        "market_lifecycle_validity"
+    ] == "FAIL"
+
+
+def test_runtime_rotation_uses_segment_local_chain_indices(tmp_path: Path) -> None:
+    session = _session(
+        tmp_path,
+        configured_duration_seconds=1,
+        max_segment_bytes=1,
+    )
+    tracker = _tracker()
+    for index in range(1, 3):
+        event = tracker.record(
+            {"type": "heartbeat", "sid": 41, "seq": index},
+            local_row_index=index,
+            received_at_utc=START + timedelta(milliseconds=index),
+            received_monotonic_ns=index,
+        )
+        session.record_event(event)
+    summary = session.close(
+        ended_at_utc=START + timedelta(seconds=1),
+        terminal_reason="bounded_duration_complete",
+        stop_requested=False,
+        connection_established=True,
+        subscription_acknowledged=True,
+        blocker_code=None,
+    )
+
+    assert len(summary["segment_summaries"]) >= 2
+    for segment in summary["segment_summaries"]:
+        rows = [
+            json.loads(line)
+            for line in (tmp_path / segment["data_path"]).read_text().splitlines()
+        ]
+        assert [row["local_row_index"] for row in rows] == list(
+            range(1, len(rows) + 1)
+        )
+
+
+def test_runtime_crash_recovery_removes_only_partial_tail_and_never_restarts(
+    tmp_path: Path,
+) -> None:
+    session = _session(tmp_path, configured_duration_seconds=300)
+    event = _tracker().record(
+        {"type": "heartbeat", "sid": 41, "seq": 1},
+        local_row_index=1,
+        received_at_utc=START + timedelta(seconds=1),
+        received_monotonic_ns=1,
+    )
+    session.record_event(event)
+    session._writer._handle.close()
+    with session.current_data_path.open("ab") as handle:
+        handle.write(b'{"local_row_index":2')
+
+    recovery = recover_d2_runtime_artifacts(
+        tmp_path,
+        recovered_at_utc=START + timedelta(seconds=10),
+    )
+
+    assert recovery["partial_tail_bytes_removed"] > 0
+    assert recovery["snapshot_required"] is True
+    assert recovery["inherited_book_state"] is False
+    assert recovery["automatic_restart"] is False
+    assert recovery["replay_qualified"] is False
+
+
+def test_runtime_validator_rejects_tampered_durable_record(tmp_path: Path) -> None:
+    session = _session(tmp_path, configured_duration_seconds=1)
+    session.record_event(
+        _tracker().record(
+            {"type": "heartbeat", "sid": 41, "seq": 1},
+            local_row_index=1,
+            received_at_utc=START,
+            received_monotonic_ns=1,
+        )
+    )
+    summary = session.close(
+        ended_at_utc=START + timedelta(seconds=1),
+        terminal_reason="bounded_duration_complete",
+        stop_requested=False,
+        connection_established=True,
+        subscription_acknowledged=True,
+        blocker_code=None,
+    )
+    path = tmp_path / summary["segment_summaries"][0]["data_path"]
+    path.write_bytes(path.read_bytes().replace(b'"heartbeat"', b'"heartbeaX"', 1))
+
+    validation = validate_d2_runtime_artifacts(tmp_path)
+
+    assert validation["status"] == "fail"
+    assert validation["artifact_integrity"] == "FAIL"
+    assert any("segment verification failed" in failure for failure in validation["failures"])
+
+
+def _session(
+    root: Path,
+    *,
+    configured_duration_seconds: int,
+    max_segment_bytes: int = 64 * 1024 * 1024,
+) -> RuntimeEvidenceSession:
+    return RuntimeEvidenceSession(
+        output_dir=root,
+        campaign_id="d2e-runtime-test",
+        mode="read_only_websocket_smoke",
+        configured_duration_seconds=configured_duration_seconds,
+        selected_market_metadata={"ticker": MARKET, "status": "active"},
+        lifecycle_mode_and_source="selected_market_rest_fallback",
+        pricing_mode_and_source="subscription_metadata_or_explicit_venue_default",
+        provenance=RuntimeCodeProvenance(
+            public_code_commit=COMMIT,
+            branch="codex/d2e-runtime-entrypoint-integration",
+            remote="https://github.com/minqiyang/market-neutral-trader.git",
+            dirty_state=False,
+        ),
+        threshold_policy=V2_THRESHOLD_POLICY,
+        started_at_utc=START,
+        checkpoint_every_records=2,
+        max_segment_bytes=max_segment_bytes,
+    )
+
+
+def _tracker(
+    *,
+    markets: tuple[str, ...] = (MARKET,),
+    continuity_policy: SequenceContinuityPolicy = SequenceContinuityPolicy.UNKNOWN,
+) -> KalshiWsIntegrityTracker:
+    tracker = KalshiWsIntegrityTracker(
+        campaign_id="d2e-runtime-test",
+        requested_market_tickers=markets,
+        continuity_policy=continuity_policy,
+    )
+    tracker.start_connection()
+    tracker.bind_subscription(command_id=1)
+    return tracker
+
+
+class _FakeTime:
+    def __init__(self) -> None:
+        self.seconds = 0
+
+    def now(self) -> datetime:
+        return START + timedelta(seconds=self.seconds)
+
+    def monotonic(self) -> float:
+        self.seconds += 1
+        return float(self.seconds)
+
+    def monotonic_ns(self) -> int:
+        return self.seconds * 1_000_000_000
+
+
+class _FakeWebSocket:
+    def __init__(self, messages: list[dict[str, object]]) -> None:
+        self.messages = [json.dumps(message) for message in messages]
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc_info: object) -> None:
+        return None
+
+    def send(self, _payload: str) -> None:
+        return None
+
+    def recv(self, *, timeout: float | None = None) -> str:
+        if self.messages:
+            return self.messages.pop(0)
+        raise TimeoutError
+
+
+def _private_key(root: Path) -> Path:
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    path = root / "fixture.pem"
+    path.write_bytes(
+        key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        )
+    )
+    return path

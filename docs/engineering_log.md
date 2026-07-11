@@ -28,6 +28,32 @@ event tickers, caches core events, bounds retries, and explicitly reports
 incomplete coverage. Auxiliary image metadata remains outside lifecycle
 completeness.
 
+## D2E runtime integration
+
+D2A-D2D originally merged as independently verified software contracts, while
+the operational `kalshi-ws-smoke` entrypoint still wrote the historical
+campaign schema. D2E fixes that assembly gap rather than weakening the Real5M
+evidence gate.
+
+The recorder now exposes D2A events and typed connection observations to one
+runtime session. Each event is admitted once, rebuilt once, checked for public
+trade evidence once, and appended once to a segment-local D2D chain. This keeps
+event callbacks O(1) with respect to file size. Terminal validation is allowed
+to scan closed files to verify chain, checkpoint, nested D2A schema, and
+closed-file hash.
+
+Runtime timing comes from UTC evidence boundaries and connection windows, not
+the requested duration. Lifecycle fallback is periodically refreshed through
+an injectable selected-market provider; tests use only local mocks. Sequence,
+rebuild, lifecycle, keepalive, duration, process, supervisor, backup, and replay
+dimensions remain independent. A quiet book can warn without becoming a
+transport failure, and unknown keepalive or sequence semantics cannot become
+an overall pass.
+
+The legacy campaign reader remains for historical inspection. New WebSocket
+runs use the versioned D2 runtime writer, including preflight-blocked runs, so a
+future operator cannot silently fall back to `v2.readonly_campaign.v1`.
+
 ## D2D evidence classification, durability, and performance
 
 D2D turns the D2A-D2C fixture contracts into an explicit software evidence

@@ -489,6 +489,20 @@ def _evidence_status(
     records: list[dict[str, object]],
     summaries: Mapping[str, Mapping[str, object]],
 ) -> dict[str, object]:
+    campaign = summaries.get("campaign_summary.json", {})
+    if campaign.get("runtime_schema_version") == "edmn.kalshi.ws.runtime.v2":
+        dimensions = campaign.get("independent_evidence_classifications")
+        return {
+            "runtime_schema_version": campaign.get("runtime_schema_version"),
+            "overall_classification": campaign.get("overall_evidence_classification"),
+            "dimensions": dict(dimensions) if isinstance(dimensions, Mapping) else {},
+            "artifact_integrity_summary": campaign.get("artifact_integrity_summary"),
+            "sequence_summaries": campaign.get("sequence_summaries") or [],
+            "rebuild_summaries": campaign.get("rebuild_summaries") or [],
+            "freshness_dimensions": campaign.get("freshness_dimensions") or {},
+            "replay_qualified": False,
+            "strict_verdict": "STRICT NO-GO",
+        }
     summary = summaries.get("evidence_summary.json", {})
     layers = summary.get("layers")
     if not isinstance(layers, Mapping):
@@ -536,6 +550,17 @@ def _validation_status(
     records: list[dict[str, object]],
     summaries: Mapping[str, Mapping[str, object]],
 ) -> dict[str, object]:
+    campaign_validation = summaries.get("campaign_validation.json", {})
+    if campaign_validation.get("runtime_schema_version") == "edmn.kalshi.ws.runtime.v2":
+        return {
+            "runtime_schema_version": campaign_validation.get("runtime_schema_version"),
+            "status": campaign_validation.get("status"),
+            "overall_evidence_classification": campaign_validation.get(
+                "overall_evidence_classification"
+            ),
+            "artifact_integrity": campaign_validation.get("artifact_integrity"),
+            "failures": campaign_validation.get("failures") or [],
+        }
     validation = summaries.get("validation_summary.json", {})
     daily = _first_record(records, "daily_validation_report")
     return {
@@ -567,6 +592,7 @@ def _campaign_status(
     close_time = campaign.get("close_time") or campaign.get("expected_expiration")
     market_closed = _is_closed_market_status(market_status)
     return {
+        "runtime_schema_version": campaign.get("runtime_schema_version"),
         "campaign_id": campaign.get("campaign_id"),
         "status": _campaign_monitor_status(campaign, validation),
         "completion_status": completion_status,
@@ -607,6 +633,18 @@ def _campaign_status(
         "exchange_heartbeat_status": campaign.get("exchange_heartbeat_status") or "UNKNOWN",
         "market_count": campaign.get("market_count"),
         "duration_seconds": campaign.get("duration_seconds"),
+        "configured_duration_seconds": campaign.get("configured_duration_seconds"),
+        "actual_elapsed_seconds": campaign.get("actual_elapsed_seconds"),
+        "connected_elapsed_seconds": campaign.get("connected_elapsed_seconds"),
+        "connection_coverage": campaign.get("connection_coverage"),
+        "threshold_policy_version": campaign.get("threshold_policy_version"),
+        "freshness_dimensions": campaign.get("freshness_dimensions"),
+        "artifact_integrity_summary": campaign.get("artifact_integrity_summary"),
+        "independent_evidence_classifications": campaign.get(
+            "independent_evidence_classifications"
+        ),
+        "sequence_summaries": campaign.get("sequence_summaries") or [],
+        "rebuild_summaries": campaign.get("rebuild_summaries") or [],
         "event_count": event_count,
         "snapshot_count": campaign.get("snapshot_count") or validation.get("snapshot_count") or 0,
         "delta_count": campaign.get("delta_count") or validation.get("delta_count") or 0,
@@ -649,6 +687,35 @@ def _campaign_monitor_status(
 ) -> str | None:
     if not campaign.get("campaign_id"):
         return None
+    if campaign.get("runtime_schema_version") == "edmn.kalshi.ws.runtime.v2":
+        if campaign.get("blocker_code"):
+            return (
+                "WEBSOCKET_AUTH_BLOCKED"
+                if campaign.get("blocker_code")
+                in {"NO_WS_CREDENTIALS", "WS_CREDENTIAL_STORAGE_UNSAFE", "WS_AUTH_FAILED"}
+                else "D2_RUNTIME_BLOCKED"
+            )
+        if campaign.get("status") == "d2_runtime_running":
+            return "D2_RUNTIME_RUNNING"
+        dimensions = campaign.get("independent_evidence_classifications")
+        if isinstance(dimensions, Mapping) and any(
+            dimensions.get(field) == "FAIL"
+            for field in (
+                "artifact_integrity",
+                "transport_connectivity",
+                "subscription_status",
+                "rebuild_integrity",
+                "market_lifecycle_validity",
+                "duration_evidence",
+                "process_liveness",
+            )
+        ):
+            return "D2_RUNTIME_EVIDENCE_FAILED"
+        return (
+            "D2_RUNTIME_COMPLETE"
+            if validation.get("status") == "pass"
+            else "D2_RUNTIME_VALIDATION_FAILED"
+        )
     if _is_closed_market_status(campaign.get("market_status") or campaign.get("status_at_launch")):
         return "MARKET_CLOSED_OR_FINALIZED"
     if (
@@ -774,6 +841,14 @@ def _health(
     if not records and not summaries:
         warnings.append("NO_DATA: no monitor artifacts found")
         return "NO_DATA"
+    campaign = summaries.get("campaign_summary.json", {})
+    if campaign.get("runtime_schema_version") == "edmn.kalshi.ws.runtime.v2":
+        dimensions = campaign.get("independent_evidence_classifications")
+        if isinstance(dimensions, Mapping):
+            if any(value == "FAIL" for value in dimensions.values()):
+                return "BLOCKED"
+            if any(value == "UNKNOWN" for value in dimensions.values()):
+                return "WARNING"
     if (
         risk.get("kill_switch")
         or risk.get("decision") == "reject"
@@ -943,6 +1018,7 @@ def _completed_bounded_campaign(campaign: Mapping[str, object]) -> bool:
         "smoke_complete",
         "recorder_smoke_complete",
         "websocket_smoke_complete",
+        "d2_runtime_complete",
     }
 
 
