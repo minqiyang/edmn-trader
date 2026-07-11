@@ -568,6 +568,19 @@ def test_secret_like_keys_nested_in_sequences_are_rejected() -> None:
         )
 
 
+def test_private_account_keys_nested_in_nested_sequences_are_rejected() -> None:
+    with pytest.raises(ValueError, match="private account/order data"):
+        _tracker().record(
+            {
+                "type": "trade",
+                "levels": [[{"order_id": "private-value"}]],
+            },
+            local_row_index=1,
+            received_at_utc=RECEIVED_AT,
+            received_monotonic_ns=123_456,
+        )
+
+
 def test_public_trade_sid_does_not_reset_orderbook_integrity_segment() -> None:
     tracker = _tracker()
     snapshot = _record(

@@ -75,15 +75,15 @@ def validate_no_private_account_payload(
             _PRIVATE_ACCOUNT_PREFIXES
         ):
             raise ValueError(f"{path}.{key} must not contain private account/order data")
-        if isinstance(item, Mapping):
-            validate_no_private_account_payload(item, path=f"{path}.{key}")
-        elif isinstance(item, Sequence) and not isinstance(item, str | bytes | bytearray):
-            for index, nested in enumerate(item):
-                if isinstance(nested, Mapping):
-                    validate_no_private_account_payload(
-                        nested,
-                        path=f"{path}.{key}[{index}]",
-                    )
+        _validate_private_nested_value(item, path=f"{path}.{key}")
+
+
+def _validate_private_nested_value(value: Any, *, path: str) -> None:
+    if isinstance(value, Mapping):
+        validate_no_private_account_payload(value, path=path)
+    elif isinstance(value, Sequence) and not isinstance(value, str | bytes | bytearray):
+        for index, item in enumerate(value):
+            _validate_private_nested_value(item, path=f"{path}[{index}]")
 
 
 def _validate_nested_value(value: Any, *, path: str) -> None:

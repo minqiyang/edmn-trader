@@ -45,6 +45,9 @@ numbers while the repository is still in early research scaffolding.
   are recursively inventoried by path, partial rotation successors fail closed,
   and running monitor snapshots retain observed critical evidence without
   allowing stale keepalive or late raw acknowledgment to pass.
+  The monitor revalidates completed D2 roots without rewriting the report,
+  rejects unsafe fixed metadata, and recovery records bind partial-tail counts
+  to pre/post file sizes while preflighting all manifested symlink paths.
   Legacy v1 artifacts remain readable but are not selected for new WebSocket
   runs. Tests are mocked and public live trading remains disabled.
 - Added D2D orthogonal evidence classification, timestamp-derived duration,

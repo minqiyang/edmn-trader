@@ -2258,7 +2258,7 @@ def test_runtime_recovery_rejects_dangling_partial_successor_before_mutation(
     )
     successor.symlink_to(tmp_path / "missing-summary.json")
 
-    with pytest.raises(ValueError, match="partial successor"):
+    with pytest.raises(ValueError, match="partial successor|must not be a symlink"):
         recover_d2_runtime_artifacts(
             tmp_path,
             recovered_at_utc=START + timedelta(seconds=2),
@@ -3845,3 +3845,114 @@ def test_runtime_recovery_rejects_in_root_segment_symlink_before_mutation(
 
     assert decoy_path.read_bytes() == decoy_before
     assert not (tmp_path / "runtime_recovery.json").exists()
+
+
+def test_validator_rejects_tampered_recovery_tail_size_metadata(tmp_path: Path) -> None:
+    session = _session(tmp_path, configured_duration_seconds=300)
+    session.record_event(
+        _tracker().record(
+            {"type": "heartbeat", "sid": 41, "seq": 1},
+            local_row_index=1,
+            received_at_utc=START + timedelta(seconds=1),
+            received_monotonic_ns=1,
+        )
+    )
+    session._writer._handle.close()
+    with session.current_data_path.open("ab") as handle:
+        handle.write(b'{"local_row_index":2')
+    recovery = recover_d2_runtime_artifacts(
+        tmp_path,
+        recovered_at_utc=START + timedelta(seconds=10),
+    )
+    assert recovery["validation_status"] == "pass"
+    recovery_path = tmp_path / "runtime_recovery.json"
+    recovery_baseline = json.loads(recovery_path.read_text(encoding="utf-8"))
+    summary_baselines = {
+        name: json.loads((tmp_path / name).read_text(encoding="utf-8"))
+        for name in ("campaign_summary.json", "campaign_manifest.json", "run_metadata.json")
+    }
+    recovered_segment = next(
+        segment
+        for segment in summary_baselines["campaign_summary.json"]["segment_summaries"]
+        if segment.get("recovery_status") == "CRASH_RECOVERED"
+    )
+    segment_path = tmp_path / recovered_segment["summary_path"]
+    segment_baseline = json.loads(segment_path.read_text(encoding="utf-8"))
+
+    for value in (-1, 1_000_000):
+        tampered_recovery = {**recovery_baseline, "partial_tail_bytes_removed": value}
+        recovery_path.write_text(json.dumps(tampered_recovery) + "\n", encoding="utf-8")
+        segment_tampered = {**segment_baseline, "partial_tail_bytes_removed": value}
+        segment_path.write_text(json.dumps(segment_tampered) + "\n", encoding="utf-8")
+        for name, baseline in summary_baselines.items():
+            fixed_tampered = json.loads(json.dumps(baseline))
+            recovered = next(
+                item
+                for item in fixed_tampered["segment_summaries"]
+                if item.get("recovery_status") == "CRASH_RECOVERED"
+            )
+            recovered["partial_tail_bytes_removed"] = value
+            (tmp_path / name).write_text(
+                json.dumps(fixed_tampered) + "\n",
+                encoding="utf-8",
+            )
+
+        validation = validate_d2_runtime_artifacts(tmp_path)
+
+        assert validation["status"] == "fail"
+        assert any("partial" in failure for failure in validation["failures"])
+
+        recovery_path.write_text(json.dumps(recovery_baseline) + "\n", encoding="utf-8")
+        segment_path.write_text(json.dumps(segment_baseline) + "\n", encoding="utf-8")
+        for name, baseline in summary_baselines.items():
+            (tmp_path / name).write_text(json.dumps(baseline) + "\n", encoding="utf-8")
+
+
+def test_runtime_recovery_preflights_all_manifest_segment_paths(tmp_path: Path) -> None:
+    session = _session(tmp_path, configured_duration_seconds=300)
+    session._writer._handle.close()
+    summary_path = tmp_path / "campaign_summary.json"
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    current_data_path = tmp_path / summary["segment_summaries"][-1]["data_path"]
+    alias_path = current_data_path.with_name("other-segment.events.jsonl")
+    alias_path.symlink_to(current_data_path)
+    summary["segment_summaries"].append(
+        {
+            "segment_id": "other-segment.evidence.0001",
+            "segment_closed": True,
+            "data_path": str(alias_path.relative_to(tmp_path)),
+            "checkpoint_path": summary["segment_summaries"][-1]["checkpoint_path"],
+            "summary_path": summary["segment_summaries"][-1]["checkpoint_path"],
+        }
+    )
+    summary_path.write_text(json.dumps(summary) + "\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="must not be a symlink"):
+        recover_d2_runtime_artifacts(tmp_path, recovered_at_utc=START + timedelta(seconds=1))
+
+    assert not (tmp_path / "runtime_recovery.json").exists()
+
+
+def test_monitor_fails_closed_when_campaign_summary_is_unsafe(tmp_path: Path) -> None:
+    session = _session(tmp_path, configured_duration_seconds=1)
+    session.close(
+        ended_at_utc=START + timedelta(seconds=1),
+        terminal_reason="bounded_duration_complete",
+        stop_requested=False,
+        connection_established=True,
+        subscription_acknowledged=True,
+        blocker_code=None,
+    )
+    outside = tmp_path.parent / f"{tmp_path.name}-campaign-summary.json"
+    outside.write_text("{}\n", encoding="utf-8")
+    campaign_summary = tmp_path / "campaign_summary.json"
+    campaign_summary.unlink()
+    campaign_summary.symlink_to(outside)
+
+    snapshot = build_monitor_snapshot(tmp_path, now=START + timedelta(seconds=1))
+
+    assert snapshot["run_info"]["health"] == "BLOCKED"
+    assert snapshot["validation"]["status"] == "fail"
+    assert any(
+        "campaign_summary.json" in warning for warning in snapshot["run_info"]["warnings"]
+    )

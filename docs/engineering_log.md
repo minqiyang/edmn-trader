@@ -120,6 +120,10 @@ also binds acknowledgment chronology, recursive lexical artifact identity,
 symlink-root recovery, and observed running-monitor transport/freshness state.
 Running status now blocks observed lifecycle, sequence, rebuild, or stale
 keepalive failures and never retroactively grounds a typed acknowledgment.
+The final boundary audit recursively screens private account/order fields
+through nested sequences, revalidates completed roots from the monitor without
+rewriting reports, binds recovery tail counts to pre/post file sizes, and
+preflights all manifest evidence paths for symlink aliases before mutation.
 
 ## D2D evidence classification, durability, and performance
 

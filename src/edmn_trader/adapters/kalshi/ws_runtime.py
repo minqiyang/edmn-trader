@@ -1705,6 +1705,27 @@ def validate_d2_runtime_artifacts(
             )
             if recovery_segment is None:
                 raise ValueError("runtime recovery segment is not in the manifest")
+            recovery_data_path = _contained_artifact_path(
+                root,
+                recovery_segment["data_path"],
+                reject_symlinks=True,
+            )
+            pre_recovery_file_size = recovery.get("pre_recovery_file_size")
+            post_recovery_file_size = recovery.get("post_recovery_file_size")
+            partial_tail_bytes_removed = recovery.get("partial_tail_bytes_removed")
+            for field, value in (
+                ("pre_recovery_file_size", pre_recovery_file_size),
+                ("post_recovery_file_size", post_recovery_file_size),
+                ("partial_tail_bytes_removed", partial_tail_bytes_removed),
+            ):
+                if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+                    raise ValueError(f"runtime recovery {field} must be non-negative")
+            if pre_recovery_file_size < post_recovery_file_size:
+                raise ValueError("runtime recovery file size grew during recovery")
+            if post_recovery_file_size != recovery_data_path.stat().st_size:
+                raise ValueError("runtime recovery post-recovery file size mismatch")
+            if partial_tail_bytes_removed != pre_recovery_file_size - post_recovery_file_size:
+                raise ValueError("runtime recovery partial tail size mismatch")
             expected_recovery = {
                 "runtime_schema_version": summary.get("runtime_schema_version"),
                 "campaign_id": summary.get("campaign_id"),
@@ -1718,6 +1739,8 @@ def validate_d2_runtime_artifacts(
                 "partial_tail_bytes_removed": recovery_segment.get(
                     "partial_tail_bytes_removed"
                 ),
+                "pre_recovery_file_size": pre_recovery_file_size,
+                "post_recovery_file_size": post_recovery_file_size,
                 "next_segment_metadata_path": recovery_segment.get(
                     "next_segment_metadata_path"
                 ),
@@ -3070,6 +3093,39 @@ def _write_recovery_segment_start(
     return path
 
 
+def _preflight_recovery_artifact_paths(
+    root: Path,
+    segments: list[object],
+) -> None:
+    for name in (
+        "campaign_summary.json",
+        "campaign_manifest.json",
+        "run_metadata.json",
+        "campaign_validation.json",
+        "runtime_recovery.json",
+    ):
+        _runtime_metadata_path(root, name)
+    evidence_root = root / "evidence_segments"
+    if evidence_root.is_symlink():
+        raise ValueError("evidence segment root must not be a symlink")
+    if evidence_root.exists():
+        for path in evidence_root.rglob("*"):
+            if path.is_symlink():
+                raise ValueError(f"recovery artifact must not be a symlink: {path.name}")
+    for segment in segments:
+        if not isinstance(segment, Mapping):
+            raise ValueError("runtime recovery segment metadata must be an object")
+        for field in (
+            "data_path",
+            "checkpoint_path",
+            "summary_path",
+            "next_segment_metadata_path",
+        ):
+            value = segment.get(field)
+            if value is not None:
+                _contained_artifact_path(root, value, reject_symlinks=True)
+
+
 def recover_d2_runtime_artifacts(
     input_dir: Path,
     *,
@@ -3088,6 +3144,7 @@ def recover_d2_runtime_artifacts(
     segment_summaries = summary.get("segment_summaries", [])
     if not isinstance(segment_summaries, list):
         raise ValueError("runtime recovery segment summaries must be a list")
+    _preflight_recovery_artifact_paths(root, segment_summaries)
     open_segments = [
         segment
         for segment in segment_summaries
@@ -3224,6 +3281,7 @@ def recover_d2_runtime_artifacts(
         data_path.with_name(f"{segment_id}.summary.json").relative_to(root),
         reject_symlinks=True,
     )
+    pre_recovery_file_size = data_path.stat().st_size
     already_finalized = closed_summary_path.is_file()
     if already_finalized:
         closed_summary = json.loads(closed_summary_path.read_text(encoding="utf-8"))
@@ -3258,6 +3316,7 @@ def recover_d2_runtime_artifacts(
             next_segment_id=next_segment_id,
             now_utc=lambda: recovered_at_utc,
         )
+    post_recovery_file_size = data_path.stat().st_size
     recovery_start_absolute = Path(recovered.next_segment_metadata_path).resolve()
     recovery_start_path = _contained_artifact_path(
         root,
@@ -3351,6 +3410,8 @@ def recover_d2_runtime_artifacts(
         "terminal_chain_hash": recovered.terminal_chain_hash,
         "closed_file_sha256": recovered.closed_file_sha256,
         "partial_tail_bytes_removed": recovered.partial_tail_bytes_removed,
+        "pre_recovery_file_size": pre_recovery_file_size,
+        "post_recovery_file_size": post_recovery_file_size,
         "next_segment_id": recovered.next_segment_id,
         "next_segment_metadata_path": segment_record["next_segment_metadata_path"],
         "snapshot_required": recovered.snapshot_required,

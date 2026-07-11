@@ -130,6 +130,11 @@ summary artifacts.
 Validator comparison covers every persisted D2D segment-summary field. D2C
 public trades are regenerated from D2A, while lifecycle and connection records
 must reconstruct through their typed contracts and selected-market identity.
+Completed D2 roots are revalidated by the read-only monitor without rewriting
+the persisted validation report; unreadable fixed metadata fails monitor health
+closed. Recovery records preserve pre/post file sizes so partial-tail counts are
+independently bounded, and recovery rejects symlink aliases across the
+manifested evidence tree before any artifact mutation.
 Preflight-blocked artifacts retain their explicit `blocked` validator result
 without entering terminal-chain validation.
 

@@ -120,6 +120,25 @@ def _refresh_d2_validation(
     warnings: list[str],
 ) -> dict[str, dict[str, object]]:
     campaign = summaries.get("campaign_summary.json", {})
+    if not campaign and any(
+        warning.startswith("CORRUPT_SUMMARY: campaign_summary.json")
+        for warning in warnings
+    ):
+        warnings.append("D2_RUNTIME_VALIDATION_FAILED: campaign summary is unavailable")
+        refreshed = dict(summaries)
+        refreshed["campaign_summary.json"] = {
+            "runtime_schema_version": D2_RUNTIME_SCHEMA_VERSION,
+            "status": "d2_runtime_corrupt",
+        }
+        refreshed["campaign_validation.json"] = {
+            **summaries.get("campaign_validation.json", {}),
+            "runtime_schema_version": D2_RUNTIME_SCHEMA_VERSION,
+            "status": "fail",
+            "overall_evidence_classification": "FAIL",
+            "failures": ["campaign_summary.json is unavailable or unsafe"],
+            "strict_verdict": "STRICT NO-GO",
+        }
+        return refreshed
     if (
         campaign.get("runtime_schema_version") != D2_RUNTIME_SCHEMA_VERSION
         or campaign.get("status") == "d2_runtime_running"
