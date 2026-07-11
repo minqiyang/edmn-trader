@@ -1239,6 +1239,23 @@ def validate_d2_runtime_artifacts(input_dir: Path) -> dict[str, object]:
                 failures.append(f"segment summary schema mismatch: {segment_id}")
             if segment_summary.get("terminal_chain_hash") != segment["terminal_chain_hash"]:
                 failures.append(f"segment summary artifact mismatch: {segment_id}")
+            if segment_summary.get("closed_file_sha256") != digest:
+                failures.append(f"segment summary closed-file hash mismatch: {segment_id}")
+            for field in (
+                "schema_version",
+                "segment_id",
+                "segment_closed",
+                "integrity_scope",
+                "last_committed_local_row_index",
+                "byte_offset",
+                "genesis_hash",
+                "terminal_chain_hash",
+                "closed_file_sha256",
+            ):
+                if segment_summary.get(field) != segment.get(field):
+                    failures.append(
+                        f"segment summary field contradicts manifest: {segment_id}: {field}"
+                    )
         except (KeyError, OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
             failures.append(f"segment verification failed: {exc}")
     for sibling_name in ("campaign_manifest.json", "run_metadata.json"):
@@ -1351,10 +1368,15 @@ def _derive_runtime_validation(
     connection_events: list[Mapping[str, object]] = []
     lifecycle_records: list[Mapping[str, object]] = []
     terminal_records: list[Mapping[str, object]] = []
+    durable_campaign_ids: set[str] = set()
     counts: Counter[str] = Counter()
     selected_market = str(summary["market_ticker"])
     validation_rebuilder = KalshiWsBookRebuilder()
     for record in records:
+        record_campaign_id = record.get("campaign_id")
+        if not isinstance(record_campaign_id, str) or not record_campaign_id:
+            raise ValueError("durable runtime record campaign_id is required")
+        durable_campaign_ids.add(record_campaign_id)
         record_type = record["record_type"]
         if record_type == "connection_evidence":
             connection_events.append(_required_mapping(record, "connection_event"))
@@ -1368,6 +1390,8 @@ def _derive_runtime_validation(
         if record_type != "raw_transport_event":
             continue
         event = KalshiWsRawEvent.from_record(_required_mapping(record, "d2a_event"))
+        if event.campaign_id != record_campaign_id:
+            raise ValueError("D2A campaign identity contradicts durable runtime record")
         raw_events.append(event)
         counts["event_count"] += 1
         counts[f"native:{event.native_type or 'unknown'}"] += 1
@@ -1412,6 +1436,9 @@ def _derive_runtime_validation(
         if key.startswith(("native:", "admitted_selected:")):
             del counts[key]
 
+    if len(durable_campaign_ids) != 1:
+        raise ValueError("durable runtime records require one campaign identity")
+    durable_campaign_id = next(iter(durable_campaign_ids))
     if len(terminal_records) == 1:
         terminal = terminal_records[0]
         terminal_timing = _required_mapping(terminal, "timing")
@@ -1587,6 +1614,7 @@ def _derive_runtime_validation(
     )
     durable_fields: dict[str, object] = {
         **timing.to_record(),
+        "campaign_id": durable_campaign_id,
         "sequence_summaries": _sequence_summary_records(sequence),
         "rebuild_summaries": _rebuild_summary_records(rebuild),
         "connection_windows": windows,
@@ -2003,48 +2031,55 @@ def recover_d2_runtime_artifacts(
             Counter(),
             recovered_records,
         )
-    _, _, _, recovery_terminal = _derive_runtime_validation(
-        summary,
-        recovered_records,
-        allow_summary_terminal=True,
+    terminal_count = sum(
+        record.get("record_type") == "runtime_terminal" for record in recovered_records
     )
-    terminal_writer = EvidenceSegmentWriter(
-        data_path.parent,
-        segment_id=f"{summary['campaign_id']}.recovery.terminal",
-        checkpoint_every_records=1,
-        now_utc=lambda: recovered_at_utc,
-    )
-    terminal_writer.append(
-        {
-            "schema_version": D2_RUNTIME_RECORD_SCHEMA_VERSION,
-            "record_type": "runtime_terminal",
-            "campaign_id": summary["campaign_id"],
-            "local_row_index": 1,
-            "observed_at_utc": recovered_at_utc.isoformat(),
-            "runtime_terminal": recovery_terminal,
-        }
-    )
-    terminal_summary = terminal_writer.close(terminal_reason="crash_recovery_terminal")
-    summary["segment_summaries"].append(
-        {
-            **terminal_summary,
-            "data_path": str(terminal_writer.data_path.relative_to(root)),
-            "checkpoint_path": str(terminal_writer.checkpoint_path.relative_to(root)),
-            "summary_path": str(terminal_writer.summary_path.relative_to(root)),
-            "append_chain_update_count": terminal_writer.append_chain_update_count,
-            "full_file_hash_count": terminal_writer.full_file_hash_count,
-            "recovery_status": "RECOVERY_TERMINAL_EVIDENCE",
-            "partial_tail_bytes_removed": 0,
-            "snapshot_required_after_recovery": True,
-        }
-    )
-    recovered_records = []
-    for closed_segment in summary["segment_summaries"]:
-        _validate_runtime_records(
-            root / str(closed_segment["data_path"]),
-            Counter(),
+    if terminal_count == 0:
+        _, _, initial_fields, recovery_terminal = _derive_runtime_validation(
+            summary,
             recovered_records,
+            allow_summary_terminal=True,
         )
+        summary.update(initial_fields)
+        terminal_writer = EvidenceSegmentWriter(
+            data_path.parent,
+            segment_id=f"{summary['campaign_id']}.recovery.terminal",
+            checkpoint_every_records=1,
+            now_utc=lambda: recovered_at_utc,
+        )
+        terminal_writer.append(
+            {
+                "schema_version": D2_RUNTIME_RECORD_SCHEMA_VERSION,
+                "record_type": "runtime_terminal",
+                "campaign_id": summary["campaign_id"],
+                "local_row_index": 1,
+                "observed_at_utc": recovered_at_utc.isoformat(),
+                "runtime_terminal": recovery_terminal,
+            }
+        )
+        terminal_summary = terminal_writer.close(terminal_reason="crash_recovery_terminal")
+        summary["segment_summaries"].append(
+            {
+                **terminal_summary,
+                "data_path": str(terminal_writer.data_path.relative_to(root)),
+                "checkpoint_path": str(terminal_writer.checkpoint_path.relative_to(root)),
+                "summary_path": str(terminal_writer.summary_path.relative_to(root)),
+                "append_chain_update_count": terminal_writer.append_chain_update_count,
+                "full_file_hash_count": terminal_writer.full_file_hash_count,
+                "recovery_status": "RECOVERY_TERMINAL_EVIDENCE",
+                "partial_tail_bytes_removed": 0,
+                "snapshot_required_after_recovery": True,
+            }
+        )
+        recovered_records = []
+        for closed_segment in summary["segment_summaries"]:
+            _validate_runtime_records(
+                root / str(closed_segment["data_path"]),
+                Counter(),
+                recovered_records,
+            )
+    elif terminal_count != 1:
+        raise ValueError("recovery requires at most one durable runtime terminal")
     _, durable_counts, durable_fields, _ = _derive_runtime_validation(
         summary,
         recovered_records,

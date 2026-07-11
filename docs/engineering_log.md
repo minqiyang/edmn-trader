@@ -87,6 +87,9 @@ counter reconciliation cannot leave semantic evidence stale.
 Requested/configured timing and terminal disposition are no longer summary
 inputs to validation: a chained terminal record binds the complete timing
 contract, and crash recovery writes an evidence-only terminal segment.
+The final recovery window preserves an already-chained terminal when only
+segment close was interrupted. Validator checks bind campaign identity and the
+persisted segment-summary close hash back to durable records and file bytes.
 
 ## D2D evidence classification, durability, and performance
 

@@ -103,6 +103,10 @@ derived semantic summaries after reconciling complete tail rows.
 The full `EvidenceTiming` record and terminal disposition are written as a
 chained terminal record. Recovery closes a separate evidence-only terminal
 segment, without opening transport or inheriting book state.
+If a crash occurs after the normal terminal append but before close, recovery
+preserves that single authoritative terminal instead of adding another.
+Durable campaign identity and closed-file hashes are cross-checked against all
+summary artifacts.
 
 ## Safety
 

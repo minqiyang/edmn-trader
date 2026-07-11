@@ -1122,6 +1122,52 @@ def test_runtime_crash_recovery_reconciles_complete_tail_record_counts(
     assert summary["max_transport_keepalive_age_seconds"] == 9
 
 
+def test_runtime_recovery_preserves_single_preclose_terminal(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    session = _session(tmp_path, configured_duration_seconds=1)
+    session.record_event(
+        _tracker().record(
+            {"type": "heartbeat", "sid": 41, "seq": 1},
+            local_row_index=1,
+            received_at_utc=START,
+            received_monotonic_ns=1,
+        )
+    )
+
+    def crash_before_segment_close(*_args, **_kwargs):
+        raise RuntimeError("synthetic pre-close crash")
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(ws_runtime.EvidenceSegmentWriter, "close", crash_before_segment_close)
+        with pytest.raises(RuntimeError, match="pre-close crash"):
+            session.close(
+                ended_at_utc=START + timedelta(seconds=1),
+                terminal_reason="bounded_duration_complete",
+                stop_requested=False,
+                connection_established=True,
+                subscription_acknowledged=True,
+                blocker_code=None,
+            )
+    session._writer._handle.close()
+
+    recovery = recover_d2_runtime_artifacts(
+        tmp_path,
+        recovered_at_utc=START + timedelta(seconds=2),
+    )
+    summary = json.loads((tmp_path / "campaign_summary.json").read_text())
+    terminal_count = sum(
+        json.loads(line)["record_type"] == "runtime_terminal"
+        for segment in summary["segment_summaries"]
+        for line in (tmp_path / segment["data_path"]).read_text().splitlines()
+    )
+
+    assert recovery["validation_status"] == "pass"
+    assert terminal_count == 1
+    assert summary["terminal_reason"] == "bounded_duration_complete"
+
+
 def test_validator_rebuilds_d2b_instead_of_trusting_persisted_frame(
     tmp_path: Path,
 ) -> None:
@@ -1246,6 +1292,49 @@ def test_validator_rejects_tampered_top_level_freshness_timing(tmp_path: Path) -
         "orderbook_event_quiet_interval_seconds" in item
         for item in validation["failures"]
     )
+
+
+def test_validator_binds_summary_campaign_id_to_durable_records(tmp_path: Path) -> None:
+    session = _session(tmp_path, configured_duration_seconds=1)
+    session.close(
+        ended_at_utc=START + timedelta(seconds=1),
+        terminal_reason="bounded_duration_complete",
+        stop_requested=False,
+        connection_established=True,
+        subscription_acknowledged=True,
+        blocker_code=None,
+    )
+    for name in ("campaign_summary.json", "campaign_manifest.json", "run_metadata.json"):
+        path = tmp_path / name
+        payload = json.loads(path.read_text())
+        payload["campaign_id"] = "tampered-campaign"
+        path.write_text(json.dumps(payload) + "\n")
+
+    validation = validate_d2_runtime_artifacts(tmp_path)
+
+    assert validation["status"] == "fail"
+    assert any("campaign_id" in item for item in validation["failures"])
+
+
+def test_validator_rejects_tampered_segment_summary_closed_hash(tmp_path: Path) -> None:
+    session = _session(tmp_path, configured_duration_seconds=1)
+    summary = session.close(
+        ended_at_utc=START + timedelta(seconds=1),
+        terminal_reason="bounded_duration_complete",
+        stop_requested=False,
+        connection_established=True,
+        subscription_acknowledged=True,
+        blocker_code=None,
+    )
+    segment_summary_path = tmp_path / summary["segment_summaries"][0]["summary_path"]
+    segment_summary = json.loads(segment_summary_path.read_text())
+    segment_summary["closed_file_sha256"] = "0" * 64
+    segment_summary_path.write_text(json.dumps(segment_summary) + "\n")
+
+    validation = validate_d2_runtime_artifacts(tmp_path)
+
+    assert validation["status"] == "fail"
+    assert any("closed-file hash mismatch" in item for item in validation["failures"])
 
 
 def test_validator_binds_every_evidence_timing_field_to_terminal_chain(
