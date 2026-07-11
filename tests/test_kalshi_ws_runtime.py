@@ -69,6 +69,18 @@ def test_runtime_provenance_names_detached_head_instead_of_failing(monkeypatch) 
     assert provenance.branch == "DETACHED_HEAD"
 
 
+def test_runtime_provenance_strips_git_remote_credentials() -> None:
+    provenance = RuntimeCodeProvenance(
+        COMMIT,
+        "main",
+        "https://user:secret-token@github.com/org/repo.git?token=secret",
+        False,
+    )
+
+    assert provenance.remote == "https://github.com/org/repo.git"
+    assert "secret" not in json.dumps(provenance.to_record())
+
+
 def test_actual_runtime_assembly_uses_d2_writer_and_mocked_transports(
     tmp_path: Path,
 ) -> None:
@@ -971,6 +983,60 @@ def test_quiet_orderbook_does_not_become_transport_loss_and_lifecycle_stays_fres
     assert summary["independent_evidence_classifications"]["market_lifecycle_validity"] == "PASS"
 
 
+def test_boundary_disconnects_count_against_transport_threshold(tmp_path: Path) -> None:
+    session = _session_without_connection(tmp_path, configured_duration_seconds=1_800)
+    for event_type, observed_at in (
+        (ConnectionEvidenceType.CONNECTION_OPEN, START + timedelta(seconds=60)),
+        (ConnectionEvidenceType.SUBSCRIPTION_ACKNOWLEDGED, START + timedelta(seconds=60)),
+        (ConnectionEvidenceType.CONNECTION_CLOSE, START + timedelta(seconds=1_800)),
+    ):
+        session.record_connection_event(
+            ConnectionEvidenceEvent(
+                event_type=event_type,
+                observed_at_utc=observed_at,
+                connection_id="late-connection",
+                segment_id="late-segment",
+                reason="boundary_disconnect_test",
+            )
+        )
+    summary = session.close(
+        ended_at_utc=START + timedelta(seconds=1_800),
+        terminal_reason="bounded_duration_complete",
+        stop_requested=False,
+        connection_established=True,
+        subscription_acknowledged=True,
+        blocker_code=None,
+    )
+
+    assert "60" in summary["disconnect_durations"]
+    assert summary["maximum_disconnect_seconds"] == "60"
+    assert summary["independent_evidence_classifications"]["transport_connectivity"] == "FAIL"
+
+
+def test_freshness_maximum_includes_start_to_first_observation(tmp_path: Path) -> None:
+    session = _session(tmp_path, configured_duration_seconds=1_800)
+    session.record_event(
+        _tracker().record(
+            {"type": "heartbeat", "sid": 41},
+            local_row_index=1,
+            received_at_utc=START + timedelta(seconds=1_700),
+            received_monotonic_ns=1,
+        )
+    )
+    summary = session.close(
+        ended_at_utc=START + timedelta(seconds=1_800),
+        terminal_reason="bounded_duration_complete",
+        stop_requested=False,
+        connection_established=True,
+        subscription_acknowledged=True,
+        blocker_code=None,
+    )
+
+    assert summary["transport_keepalive_age_seconds"] == 100
+    assert summary["max_transport_keepalive_age_seconds"] == 1_700
+    assert summary["independent_evidence_classifications"]["transport_keepalive"] == "FAIL"
+
+
 def test_closed_and_stale_lifecycle_fail_independently(tmp_path: Path) -> None:
     closed = _session(tmp_path / "closed", configured_duration_seconds=1)
     closed.record_lifecycle(
@@ -1723,7 +1789,37 @@ def _session(
     configured_duration_seconds: int,
     max_segment_bytes: int = 64 * 1024 * 1024,
 ) -> RuntimeEvidenceSession:
-    session = RuntimeEvidenceSession(
+    session = _session_without_connection(
+        root,
+        configured_duration_seconds=configured_duration_seconds,
+        max_segment_bytes=max_segment_bytes,
+    )
+    for event_type, reason in (
+        (ConnectionEvidenceType.CONNECTION_OPEN, "test_connection_open"),
+        (
+            ConnectionEvidenceType.SUBSCRIPTION_ACKNOWLEDGED,
+            "test_subscription_acknowledged",
+        ),
+    ):
+        session.record_connection_event(
+            ConnectionEvidenceEvent(
+                event_type=event_type,
+                observed_at_utc=START,
+                connection_id="test-connection",
+                segment_id="test-segment",
+                reason=reason,
+            )
+        )
+    return session
+
+
+def _session_without_connection(
+    root: Path,
+    *,
+    configured_duration_seconds: int,
+    max_segment_bytes: int = 64 * 1024 * 1024,
+) -> RuntimeEvidenceSession:
+    return RuntimeEvidenceSession(
         output_dir=root,
         campaign_id="d2e-runtime-test",
         mode="read_only_websocket_smoke",
@@ -1746,23 +1842,6 @@ def _session(
         checkpoint_every_records=2,
         max_segment_bytes=max_segment_bytes,
     )
-    for event_type, reason in (
-        (ConnectionEvidenceType.CONNECTION_OPEN, "test_connection_open"),
-        (
-            ConnectionEvidenceType.SUBSCRIPTION_ACKNOWLEDGED,
-            "test_subscription_acknowledged",
-        ),
-    ):
-        session.record_connection_event(
-            ConnectionEvidenceEvent(
-                event_type=event_type,
-                observed_at_utc=START,
-                connection_id="test-connection",
-                segment_id="test-segment",
-                reason=reason,
-            )
-        )
-    return session
 
 
 def _tracker(

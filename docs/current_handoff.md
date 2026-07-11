@@ -44,6 +44,9 @@ rejects nested private account/order/fill fields before persistence.
 The continuation pass also reconciles complete crash-tail rows, independently
 replays D2B during validation, applies the lifecycle limiter at shutdown, and
 records nested subscription errors as typed rejections.
+Runtime timing includes startup/final disconnect boundaries and start-to-first
+freshness gaps, while persisted HTTP(S) Git provenance strips credential-bearing
+URL components.
 
 This checkpoint is software-only. Tests use mocked WebSocket and lifecycle
 transports. No VPS, credential, campaign, private raw data, production endpoint,

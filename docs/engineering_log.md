@@ -93,6 +93,9 @@ persisted segment-summary close hash back to durable records and file bytes.
 The final semantic pass compares complete segment summaries, regenerates D2C
 public trades, reconstructs typed lifecycle/connection evidence, and preserves
 the separate blocked-preflight validator path.
+Boundary timing now counts startup/final disconnects and start-to-first
+freshness intervals. Persisted HTTP(S) Git remotes strip embedded userinfo,
+query, and fragment components before provenance is written.
 
 ## D2D evidence classification, durability, and performance
 

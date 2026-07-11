@@ -92,7 +92,8 @@ checkpoint, manifest, and segment summary, and requires exact reviewed
 threshold-policy provenance. Failed lifecycle observations advance the polling
 attempt clock so a venue outage cannot create a request per WebSocket frame.
 Private account, order, and fill fields are rejected recursively before raw D2A
-persistence.
+persistence. Persisted HTTP(S) Git remotes omit userinfo, query, and fragment
+components so repository provenance cannot retain embedded credentials.
 
 Recovery derives runtime counts from the closed chain, including complete tail
 rows written after the last checkpoint. Validator rebuild integrity comes from
@@ -112,6 +113,11 @@ public trades are regenerated from D2A, while lifecycle and connection records
 must reconstruct through their typed contracts and selected-market identity.
 Preflight-blocked artifacts retain their explicit `blocked` validator result
 without entering terminal-chain validation.
+
+Disconnect accounting covers runtime start through the first connection and
+the final close through terminal time, not only gaps between connections.
+Maximum keepalive, lifecycle, and orderbook quiet ages likewise include the
+interval from runtime start to the first applicable observation.
 
 ## Safety
 

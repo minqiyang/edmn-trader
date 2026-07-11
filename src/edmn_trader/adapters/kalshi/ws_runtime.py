@@ -15,6 +15,7 @@ from decimal import Decimal
 from math import ceil
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 from edmn_trader.adapters.kalshi.client import KalshiDemoMarketDataClient
 from edmn_trader.adapters.kalshi.public_evidence import (
@@ -106,9 +107,11 @@ class RuntimeCodeProvenance:
         commit = self.public_code_commit.lower()
         if not _HEX_COMMIT.fullmatch(commit):
             raise ValueError("public code commit must be a hexadecimal Git commit")
-        if not self.branch or not self.remote or not isinstance(self.dirty_state, bool):
+        remote = _sanitize_git_remote(self.remote)
+        if not self.branch or not remote or not isinstance(self.dirty_state, bool):
             raise ValueError("complete runtime code provenance is required")
         object.__setattr__(self, "public_code_commit", commit)
+        object.__setattr__(self, "remote", remote)
 
     def to_record(self) -> dict[str, object]:
         return {
@@ -137,6 +140,15 @@ def collect_runtime_code_provenance(repo_root: Path) -> RuntimeCodeProvenance:
         remote=git("remote", "get-url", "origin"),
         dirty_state=bool(git("status", "--porcelain")),
     )
+
+
+def _sanitize_git_remote(remote: str) -> str:
+    parts = urlsplit(remote)
+    if not parts.scheme or not parts.hostname:
+        return remote
+    host = f"[{parts.hostname}]" if ":" in parts.hostname else parts.hostname
+    netloc = f"{host}:{parts.port}" if parts.port is not None else host
+    return urlunsplit((parts.scheme, netloc, parts.path, "", ""))
 
 
 def run_d2_kalshi_ws_runtime(
@@ -504,11 +516,13 @@ class RuntimeEvidenceSession:
         observed_at_utc: datetime,
         evaluated_at_utc: datetime,
     ) -> None:
-        if self._last_lifecycle_at is not None:
-            self._max_lifecycle_age = _max_age(
-                self._max_lifecycle_age,
-                _age_seconds(evaluated_at_utc, self._last_lifecycle_at),
-            )
+        self._max_lifecycle_age = _max_age(
+            self._max_lifecycle_age,
+            _age_seconds(
+                evaluated_at_utc,
+                self._last_lifecycle_at or self.started_at_utc,
+            ),
+        )
         evidence = record_rest_lifecycle(
             market_metadata,
             selected_market_ticker=self.selected_market_ticker,
@@ -545,6 +559,16 @@ class RuntimeEvidenceSession:
             and event.native_market_ticker == self.selected_market_ticker
             and event.native_type in {"orderbook_snapshot", "orderbook_delta"}
         )
+        if event.native_type in {"heartbeat", "pong"} and self._last_keepalive_at is None:
+            self._max_keepalive_age = _max_age(
+                self._max_keepalive_age,
+                _age_seconds(event.received_at_utc, self.started_at_utc),
+            )
+        if selected_orderbook_event and self._last_orderbook_event_at is None:
+            self._max_orderbook_quiet = _max_age(
+                self._max_orderbook_quiet,
+                _age_seconds(event.received_at_utc, self.started_at_utc),
+            )
         if selected_orderbook_event:
             self._admitted_selected_orderbook_counts[event.native_type or "unknown"] += 1
             self._last_orderbook_event_at = event.received_at_utc
@@ -648,7 +672,11 @@ class RuntimeEvidenceSession:
         )
         classification = classify_evidence(dimensions)
         connection_windows = self._connection_window_records()
-        disconnect_durations = self._disconnect_durations(connection_windows)
+        disconnect_durations = self._disconnect_durations(
+            connection_windows,
+            started_at_utc=self.started_at_utc,
+            ended_at_utc=ended_at_utc,
+        )
         summary: dict[str, object] = {
             "runtime_schema_version": D2_RUNTIME_SCHEMA_VERSION,
             "schema_version": D2_RUNTIME_SCHEMA_VERSION,
@@ -1094,17 +1122,32 @@ class RuntimeEvidenceSession:
         return records
 
     @staticmethod
-    def _disconnect_durations(windows: list[dict[str, object]]) -> list[str]:
+    def _disconnect_durations(
+        windows: list[dict[str, object]],
+        *,
+        started_at_utc: datetime,
+        ended_at_utc: datetime,
+    ) -> list[str]:
         ordered = sorted(
             (window for window in windows if window["opened_at_utc"]),
             key=lambda window: str(window["opened_at_utc"]),
         )
-        durations = []
+        durations: list[str] = []
+        if not ordered:
+            return [_decimal_text(_decimal_seconds(ended_at_utc - started_at_utc))]
+        first_opened = _parse_time(ordered[0]["opened_at_utc"])
+        if first_opened and first_opened > started_at_utc:
+            durations.append(
+                _decimal_text(_decimal_seconds(first_opened - started_at_utc))
+            )
         for previous, current in zip(ordered, ordered[1:], strict=False):
             closed = _parse_time(previous["closed_at_utc"])
             opened = _parse_time(current["opened_at_utc"])
             if closed and opened and opened >= closed:
                 durations.append(_decimal_text(_decimal_seconds(opened - closed)))
+        last_closed = _parse_time(ordered[-1]["closed_at_utc"])
+        if last_closed and ended_at_utc > last_closed:
+            durations.append(_decimal_text(_decimal_seconds(ended_at_utc - last_closed)))
         return durations
 
     def _dimensions(
@@ -1134,7 +1177,11 @@ class RuntimeEvidenceSession:
             if timing.actual_elapsed_seconds
             else Decimal("0")
         )
-        disconnects = self._disconnect_durations(self._connection_window_records())
+        disconnects = self._disconnect_durations(
+            self._connection_window_records(),
+            started_at_utc=timing.started_at_utc,
+            ended_at_utc=timing.ended_at or timing.checkpoint_at_utc,
+        )
         maximum_disconnect = max(
             (Decimal(value) for value in disconnects),
             default=Decimal("0"),
@@ -1650,7 +1697,11 @@ def _derive_runtime_validation(
         Decimal("0"),
     )
     connected = min(actual, connected)
-    disconnects = RuntimeEvidenceSession._disconnect_durations(windows)
+    disconnects = RuntimeEvidenceSession._disconnect_durations(
+        windows,
+        started_at_utc=started,
+        ended_at_utc=ended,
+    )
     maximum_disconnect = max(
         (Decimal(value) for value in disconnects),
         default=Decimal("0"),
@@ -1671,10 +1722,11 @@ def _derive_runtime_validation(
         _parse_required_time(record.get("observed_at_utc"), "lifecycle observed_at_utc")
         for record in lifecycle_records
     ]
-    maximum_keepalive_age = _maximum_observation_gap(keepalives, ended)
-    maximum_lifecycle_age = _maximum_observation_gap(lifecycle_times, ended)
+    maximum_keepalive_age = _maximum_observation_gap(keepalives, started, ended)
+    maximum_lifecycle_age = _maximum_observation_gap(lifecycle_times, started, ended)
     maximum_orderbook_quiet = _maximum_observation_gap(
         [event.received_at_utc for event in selected_orderbook],
+        started,
         ended,
     )
     timing = build_evidence_timing(
@@ -2084,13 +2136,15 @@ def _loaded_lifecycle_status(
 
 def _maximum_observation_gap(
     observations: list[datetime],
+    started_at_utc: datetime,
     ended_at_utc: datetime,
 ) -> int | None:
     if not observations:
         return None
     ordered = sorted(observations)
     return max(
-        [
+        [_age_seconds(ordered[0], started_at_utc)]
+        + [
             _age_seconds(current, previous)
             for previous, current in zip(ordered, ordered[1:], strict=False)
         ]
@@ -2188,7 +2242,9 @@ def recover_d2_runtime_artifacts(
     )
     summary["connection_windows"] = recovered_windows
     summary["disconnect_durations"] = RuntimeEvidenceSession._disconnect_durations(
-        recovered_windows
+        recovered_windows,
+        started_at_utc=started_at,
+        ended_at_utc=recovered_at_utc,
     )
     summary["actual_elapsed_seconds"] = _decimal_text(actual_elapsed)
     summary["connected_elapsed_seconds"] = _decimal_text(connected_elapsed)

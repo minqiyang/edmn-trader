@@ -28,7 +28,9 @@ numbers while the repository is still in early research scaffolding.
   recursive private-account field rejection, typed nested subscription
   rejection, monitor fail-closed behavior, rotation, and tail-reconciling crash
   recovery. Full timing and terminal disposition are bound into the append
-  chain, including an evidence-only recovery terminal segment.
+  chain, including an evidence-only recovery terminal segment. Boundary
+  disconnect/freshness intervals are counted, and persisted HTTP(S) Git remote
+  provenance strips credential-bearing URL components.
   Legacy v1 artifacts remain readable but are not selected for new WebSocket
   runs. Tests are mocked and public live trading remains disabled.
 - Added D2D orthogonal evidence classification, timestamp-derived duration,
