@@ -107,6 +107,11 @@ If a crash occurs after the normal terminal append but before close, recovery
 preserves that single authoritative terminal instead of adding another.
 Durable campaign identity and closed-file hashes are cross-checked against all
 summary artifacts.
+Validator comparison covers every persisted D2D segment-summary field. D2C
+public trades are regenerated from D2A, while lifecycle and connection records
+must reconstruct through their typed contracts and selected-market identity.
+Preflight-blocked artifacts retain their explicit `blocked` validator result
+without entering terminal-chain validation.
 
 ## Safety
 

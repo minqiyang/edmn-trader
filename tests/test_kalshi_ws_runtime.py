@@ -1337,6 +1337,79 @@ def test_validator_rejects_tampered_segment_summary_closed_hash(tmp_path: Path) 
     assert any("closed-file hash mismatch" in item for item in validation["failures"])
 
 
+def test_validator_compares_every_persisted_segment_summary_field(tmp_path: Path) -> None:
+    session = _session(tmp_path, configured_duration_seconds=1)
+    summary = session.close(
+        ended_at_utc=START + timedelta(seconds=1),
+        terminal_reason="bounded_duration_complete",
+        stop_requested=False,
+        connection_established=True,
+        subscription_acknowledged=True,
+        blocker_code=None,
+    )
+    segment_summary_path = tmp_path / summary["segment_summaries"][0]["summary_path"]
+    segment_summary = json.loads(segment_summary_path.read_text())
+    segment_summary["terminal_reason"] = "tampered"
+    segment_summary_path.write_text(json.dumps(segment_summary) + "\n")
+
+    validation = validate_d2_runtime_artifacts(tmp_path)
+
+    assert validation["status"] == "fail"
+    assert any("terminal_reason" in item for item in validation["failures"])
+
+
+def test_validator_semantically_reconstructs_all_d2c_evidence(tmp_path: Path) -> None:
+    session = _session(tmp_path, configured_duration_seconds=1)
+    session.record_lifecycle(
+        {"ticker": MARKET, "status": "active"},
+        observed_at_utc=START,
+        evaluated_at_utc=START,
+    )
+    session.record_event(
+        _tracker().record(
+            {
+                "type": "trade",
+                "sid": 41,
+                "seq": 1,
+                "msg": {"market_ticker": MARKET, "trade_id": "trade-1"},
+            },
+            local_row_index=1,
+            received_at_utc=START,
+            received_monotonic_ns=1,
+        )
+    )
+    summary = session.close(
+        ended_at_utc=START + timedelta(seconds=1),
+        terminal_reason="bounded_duration_complete",
+        stop_requested=False,
+        connection_established=True,
+        subscription_acknowledged=True,
+        blocker_code=None,
+    )
+    baseline = [
+        json.loads(line)
+        for segment in summary["segment_summaries"]
+        for line in (tmp_path / segment["data_path"]).read_text().splitlines()
+    ]
+
+    mutations = (
+        lambda rows: next(
+            row for row in rows if row["record_type"] == "raw_transport_event"
+        ).update(d2c_public_trades=[]),
+        lambda rows: next(
+            row for row in rows if row["record_type"] == "lifecycle_evidence"
+        )["lifecycle_event"].update(market_ticker="OTHER-MARKET"),
+        lambda rows: next(
+            row for row in rows if row["record_type"] == "connection_evidence"
+        )["connection_event"].update(source="TAMPERED"),
+    )
+    for mutate in mutations:
+        rows = json.loads(json.dumps(baseline))
+        mutate(rows)
+        with pytest.raises(ValueError):
+            ws_runtime._derive_runtime_validation(summary, rows)
+
+
 def test_validator_binds_every_evidence_timing_field_to_terminal_chain(
     tmp_path: Path,
 ) -> None:

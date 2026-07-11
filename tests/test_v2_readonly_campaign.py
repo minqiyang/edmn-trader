@@ -939,6 +939,9 @@ def test_kalshi_ws_smoke_truthfully_blocks_without_credentials(
     assert validation["schema_version"] == "edmn.kalshi.ws.runtime.v2"
     assert validation["source_type"] == "WEBSOCKET_NO_ORDERBOOK"
     assert validation["event_count"] == 0
+    rerun_validation = validate_campaign(input_dir=tmp_path)
+    assert rerun_validation["status"] == "blocked"
+    assert rerun_validation["blocker_code"] == "NO_WS_CREDENTIALS"
     manifest = json.loads((tmp_path / "campaign_manifest.json").read_text(encoding="utf-8"))
     assert manifest["runtime_schema_version"] == "edmn.kalshi.ws.runtime.v2"
     assert manifest["schema_version"] != "v2.readonly_campaign.v1"

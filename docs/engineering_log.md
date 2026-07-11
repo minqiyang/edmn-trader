@@ -90,6 +90,9 @@ contract, and crash recovery writes an evidence-only terminal segment.
 The final recovery window preserves an already-chained terminal when only
 segment close was interrupted. Validator checks bind campaign identity and the
 persisted segment-summary close hash back to durable records and file bytes.
+The final semantic pass compares complete segment summaries, regenerates D2C
+public trades, reconstructs typed lifecycle/connection evidence, and preserves
+the separate blocked-preflight validator path.
 
 ## D2D evidence classification, durability, and performance
 

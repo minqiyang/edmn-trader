@@ -20,6 +20,7 @@ from edmn_trader.adapters.kalshi.client import KalshiDemoMarketDataClient
 from edmn_trader.adapters.kalshi.public_evidence import (
     ConnectionEvidenceEvent,
     ConnectionEvidenceType,
+    KalshiRestLifecycleEvidence,
     KeepaliveStatus,
     LifecycleStatus,
     LifecycleValidity,
@@ -1163,6 +1164,8 @@ def validate_d2_runtime_artifacts(input_dir: Path) -> dict[str, object]:
     except (OSError, json.JSONDecodeError) as exc:
         summary = {}
         failures.append(f"campaign_summary unavailable: {exc}")
+    if summary.get("status") == "d2_runtime_preflight_blocked":
+        return _validate_d2_preflight_block(root, summary)
     if summary.get("runtime_schema_version") != D2_RUNTIME_SCHEMA_VERSION:
         failures.append("runtime schema missing or unsupported")
     if summary.get("raw_event_schema_version") != KALSHI_WS_RAW_SCHEMA_VERSION:
@@ -1241,18 +1244,8 @@ def validate_d2_runtime_artifacts(input_dir: Path) -> dict[str, object]:
                 failures.append(f"segment summary artifact mismatch: {segment_id}")
             if segment_summary.get("closed_file_sha256") != digest:
                 failures.append(f"segment summary closed-file hash mismatch: {segment_id}")
-            for field in (
-                "schema_version",
-                "segment_id",
-                "segment_closed",
-                "integrity_scope",
-                "last_committed_local_row_index",
-                "byte_offset",
-                "genesis_hash",
-                "terminal_chain_hash",
-                "closed_file_sha256",
-            ):
-                if segment_summary.get(field) != segment.get(field):
+            for field, value in segment_summary.items():
+                if segment.get(field) != value:
                     failures.append(
                         f"segment summary field contradicts manifest: {segment_id}: {field}"
                     )
@@ -1328,6 +1321,68 @@ def validate_d2_runtime_artifacts(input_dir: Path) -> dict[str, object]:
     return result
 
 
+def _validate_d2_preflight_block(
+    root: Path,
+    summary: Mapping[str, object],
+) -> dict[str, object]:
+    failures: list[str] = []
+    try:
+        validation = json.loads(
+            (root / "campaign_validation.json").read_text(encoding="utf-8")
+        )
+    except (OSError, json.JSONDecodeError) as exc:
+        validation = {}
+        failures.append(f"campaign_validation unavailable: {exc}")
+    try:
+        validate_no_secret_payload(summary)
+    except ValueError as exc:
+        failures.append(str(exc))
+    for sibling_name in ("campaign_manifest.json", "run_metadata.json"):
+        try:
+            sibling = json.loads((root / sibling_name).read_text(encoding="utf-8"))
+            if sibling != summary:
+                failures.append(f"{sibling_name} contradicts campaign_summary.json")
+        except (OSError, json.JSONDecodeError) as exc:
+            failures.append(f"{sibling_name} unavailable: {exc}")
+    for field, expected in (
+        ("runtime_schema_version", D2_RUNTIME_SCHEMA_VERSION),
+        ("live_gate_status", "disabled"),
+        ("production_trading_enabled", False),
+        ("executable_order_intent", False),
+        ("production_endpoint_used", False),
+        ("submit_attempts", 0),
+        ("event_count", 0),
+        ("snapshot_count", 0),
+        ("delta_count", 0),
+        ("trade_count", 0),
+        ("rebuild_frame_count", 0),
+        ("segment_summaries", []),
+    ):
+        if summary.get(field) != expected:
+            failures.append(f"invalid preflight field: {field}")
+    if not summary.get("blocker_code"):
+        failures.append("preflight blocker_code is required")
+    if not isinstance(summary.get("selected_market_selection"), Mapping):
+        failures.append("preflight selection provenance is required")
+    if (
+        validation.get("status") != "blocked"
+        or validation.get("blocker_code") != summary.get("blocker_code")
+        or validation.get("live_gate_status") != "disabled"
+        or validation.get("submit_attempts") != 0
+    ):
+        failures.append("preflight validation artifact contradicts summary")
+    if failures:
+        result = {
+            **validation,
+            "status": "fail",
+            "failures": failures,
+            "strict_verdict": "STRICT NO-GO",
+        }
+        _atomic_write_json(root / "campaign_validation.json", result)
+        return result
+    return validation
+
+
 def _validate_runtime_records(
     path: Path,
     counts: Counter[str],
@@ -1379,10 +1434,48 @@ def _derive_runtime_validation(
         durable_campaign_ids.add(record_campaign_id)
         record_type = record["record_type"]
         if record_type == "connection_evidence":
-            connection_events.append(_required_mapping(record, "connection_event"))
+            connection_record = _required_mapping(record, "connection_event")
+            connection = ConnectionEvidenceEvent(
+                event_type=connection_record["event_type"],
+                observed_at_utc=_parse_required_time(
+                    connection_record.get("observed_at_utc"),
+                    "connection observed_at_utc",
+                ),
+                connection_id=str(connection_record["connection_id"]),
+                segment_id=str(connection_record["segment_id"]),
+                reason=str(connection_record["reason"]),
+                previous_connection_id=connection_record.get("previous_connection_id"),
+                previous_segment_id=connection_record.get("previous_segment_id"),
+            )
+            if connection.to_record() != connection_record:
+                raise ValueError("durable connection evidence contradicts its schema")
+            connection_events.append(connection_record)
             continue
         if record_type == "lifecycle_evidence":
-            lifecycle_records.append(_required_mapping(record, "lifecycle_event"))
+            lifecycle_record = _required_mapping(record, "lifecycle_event")
+            lifecycle = KalshiRestLifecycleEvidence(
+                market_ticker=str(lifecycle_record["market_ticker"]),
+                observed_at_utc=_parse_required_time(
+                    lifecycle_record.get("observed_at_utc"),
+                    "lifecycle observed_at_utc",
+                ),
+                evaluated_at_utc=_parse_required_time(
+                    lifecycle_record.get("evaluated_at_utc"),
+                    "lifecycle evaluated_at_utc",
+                ),
+                raw_status=lifecycle_record.get("raw_status"),
+                normalized_status=lifecycle_record.get("normalized_status"),
+                lifecycle_status=lifecycle_record["lifecycle_status"],
+                validity=lifecycle_record["validity"],
+                observation_age_seconds=int(lifecycle_record["observation_age_seconds"]),
+                max_age_seconds=int(lifecycle_record["max_age_seconds"]),
+                mve_unsupported=lifecycle_record["mve_unsupported"],
+            )
+            if lifecycle.market_ticker != selected_market:
+                raise ValueError("lifecycle evidence does not match selected market")
+            if lifecycle.to_record() != lifecycle_record:
+                raise ValueError("durable lifecycle evidence contradicts its schema")
+            lifecycle_records.append(lifecycle_record)
             continue
         if record_type == "runtime_terminal":
             terminal_records.append(_required_mapping(record, "runtime_terminal"))
@@ -1395,10 +1488,16 @@ def _derive_runtime_validation(
         raw_events.append(event)
         counts["event_count"] += 1
         counts[f"native:{event.native_type or 'unknown'}"] += 1
-        trades = record.get("d2c_public_trades")
-        if not isinstance(trades, list):
+        recorded_trades = record.get("d2c_public_trades")
+        if not isinstance(recorded_trades, list):
             raise ValueError("durable public trade evidence must be a list")
-        counts["trade_count"] += len(trades)
+        expected_trades = build_public_trade_stream(
+            (event,),
+            selected_market_tickers=(selected_market,),
+        ).to_records()
+        if recorded_trades != expected_trades:
+            raise ValueError("durable public trade evidence contradicts D2A")
+        counts["trade_count"] += len(expected_trades)
         _accumulate_validation_sequence(sequence, event)
         rebuilt = validation_rebuilder.apply(event)
         expected_rebuild = {
