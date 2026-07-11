@@ -3606,3 +3606,139 @@ def test_validator_rejects_top_level_private_account_field(tmp_path: Path) -> No
 
     assert validation["status"] == "fail"
     assert any("private account/order data" in failure for failure in validation["failures"])
+
+
+def test_atomic_runtime_json_writer_rejects_temporary_symlink(tmp_path: Path) -> None:
+    outside = tmp_path.parent / f"{tmp_path.name}-outside.json"
+    outside.write_text("unchanged\n", encoding="utf-8")
+    temporary = tmp_path / ".artifact.json.tmp"
+    temporary.symlink_to(outside)
+
+    with pytest.raises(FileExistsError):
+        ws_runtime._atomic_write_json(tmp_path / "artifact.json", {"status": "safe"})
+
+    assert outside.read_text(encoding="utf-8") == "unchanged\n"
+
+
+def test_validator_rejects_non_object_preflight_validation(tmp_path: Path) -> None:
+    ws_runtime.write_d2_runtime_preflight_block(
+        output_dir=tmp_path,
+        campaign_id="d2e-non-object-validation",
+        mode="read_only_websocket_smoke",
+        configured_duration_seconds=300,
+        provenance=RuntimeCodeProvenance(COMMIT, "main", "https://example.test/repo", False),
+        blocker_code="NO_WS_CREDENTIALS",
+        started_at_utc=START,
+    )
+    (tmp_path / "campaign_validation.json").write_text("[]\n", encoding="utf-8")
+
+    validation = validate_d2_runtime_artifacts(tmp_path)
+
+    assert validation["status"] == "fail"
+    assert validation["strict_verdict"] == "STRICT NO-GO"
+    assert any(
+        "campaign_validation must be a JSON object" in failure
+        for failure in validation["failures"]
+    )
+
+
+def test_monitor_rejects_external_jsonl_symlink(tmp_path: Path) -> None:
+    outside = tmp_path.parent / f"{tmp_path.name}-external.jsonl"
+    outside.write_text(
+        '{"record_type":"candidate","candidate_id":"external"}\n',
+        encoding="utf-8",
+    )
+    (tmp_path / "external.jsonl").symlink_to(outside)
+
+    snapshot = build_monitor_snapshot(tmp_path, now=START)
+
+    assert any("external.jsonl" in warning for warning in snapshot["run_info"]["warnings"])
+    assert all(
+        item.get("candidate_id") != "external"
+        for item in snapshot["candidates"]
+        if isinstance(item, dict)
+    )
+
+
+def test_public_ws_entrypoint_wires_unified_yes_price_mode(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    fake_time = _FakeTime()
+    websocket = _FakeWebSocket(
+        [
+            {
+                "type": "subscribed",
+                "id": 1,
+                "sid": 41,
+                "msg": {
+                    "channels": ["orderbook_delta", "trade"],
+                    "use_yes_price": True,
+                },
+            },
+            {
+                "type": "orderbook_snapshot",
+                "sid": 41,
+                "seq": 1,
+                "msg": {
+                    "market_ticker": MARKET,
+                    "yes_dollars_fp": [["0.42", "3"]],
+                    "no_dollars_fp": [],
+                },
+            },
+            {
+                "type": "orderbook_delta",
+                "sid": 41,
+                "seq": 2,
+                "msg": {
+                    "market_ticker": MARKET,
+                    "side": "yes",
+                    "price_dollars": "0.42",
+                    "delta_fp": "1",
+                },
+            },
+        ]
+    )
+    auth = KalshiWsAuthConfig(
+        api_key_id="fixture-id",
+        private_key_path=_private_key(tmp_path),
+    )
+    monkeypatch.setattr(v2_readonly_campaign, "load_kalshi_ws_auth_config_from_env", lambda: auth)
+    monkeypatch.setattr(
+        v2_readonly_campaign,
+        "discover_kalshi_demo_ws_market",
+        lambda **kwargs: {
+            "market_metadata": {"ticker": MARKET, "status": "active"},
+            "selection": {
+                "selection_profile": kwargs["selection_profile"].value,
+                "selection_safety_buffer_seconds": kwargs["safety_buffer_seconds"],
+                "selection_gate_result": "pass",
+            },
+            "blocker_code": None,
+        },
+    )
+    real_runtime = run_d2_kalshi_ws_runtime
+
+    def mocked_runtime(**kwargs: Any) -> dict[str, object]:
+        assert kwargs["use_yes_price"] is True
+        return real_runtime(
+            **kwargs,
+            websocket_factory=lambda *_args, **_kwargs: websocket,
+            lifecycle_provider=lambda ticker: {"ticker": ticker, "status": "active"},
+            now=fake_time.now,
+            monotonic=fake_time.monotonic,
+            monotonic_ns=fake_time.monotonic_ns,
+        )
+
+    monkeypatch.setattr(v2_readonly_campaign, "run_d2_kalshi_ws_runtime", mocked_runtime)
+    summary = v2_readonly_campaign.run_kalshi_ws_smoke(
+        output_dir=tmp_path / "run",
+        campaign_id="d2e-public-unified-price",
+        duration_seconds=300,
+        max_markets=1,
+        use_yes_price=True,
+    )
+
+    assert summary["use_yes_price"] is True
+    assert summary["pricing_mode_and_source"] == "explicit_subscription_use_yes_price_true"
+    assert summary["rebuild_summaries"][0]["pricing_modes"] == ["UNIFIED_YES_PRICE"]

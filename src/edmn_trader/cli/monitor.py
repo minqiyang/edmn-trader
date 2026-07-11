@@ -164,7 +164,7 @@ def _read_summaries(input_dir: Path, warnings: list[str]) -> dict[str, dict[str,
     summaries: dict[str, dict[str, object]] = {}
     for name in SUMMARY_FILES:
         try:
-            path = _safe_summary_path(input_dir, name)
+            path = _safe_input_path(input_dir, name)
             if not path.exists():
                 continue
             payload = json.loads(path.read_text(encoding="utf-8"))
@@ -178,7 +178,7 @@ def _read_summaries(input_dir: Path, warnings: list[str]) -> dict[str, dict[str,
     return summaries
 
 
-def _safe_summary_path(input_dir: Path, name: str) -> Path:
+def _safe_input_path(input_dir: Path, name: str) -> Path:
     root = input_dir.resolve()
     relative = Path(name)
     if relative.is_absolute() or ".." in relative.parts:
@@ -199,7 +199,12 @@ def _read_records(input_dir: Path, warnings: list[str]) -> list[dict[str, object
     if not input_dir.exists():
         return []
     records: list[dict[str, object]] = []
-    for path in sorted(input_dir.glob("*.jsonl")):
+    for candidate in sorted(input_dir.glob("*.jsonl")):
+        try:
+            path = _safe_input_path(input_dir, candidate.name)
+        except (OSError, ValueError) as exc:
+            warnings.append(f"CORRUPT_JSONL: {candidate.name}: {exc}")
+            continue
         try:
             lines = path.read_text(encoding="utf-8").splitlines()
         except OSError as exc:

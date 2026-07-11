@@ -211,6 +211,7 @@ def run_d2_kalshi_ws_runtime(
     monotonic_ns: Callable[[], int] | None = None,
     max_events: int = 500,
     max_reconnects: int = 0,
+    use_yes_price: bool = False,
 ) -> dict[str, object]:
     """Run the actual D2 read-only assembly; callers own auth/discovery preflight."""
 
@@ -224,9 +225,13 @@ def run_d2_kalshi_ws_runtime(
         selected_market_metadata=market_metadata,
         selected_market_selection=market_selection,
         lifecycle_mode_and_source="selected_market_rest_fallback",
-        pricing_mode_and_source="explicit_subscription_use_yes_price_false",
+        pricing_mode_and_source=(
+            "explicit_subscription_use_yes_price_"
+            f"{'true' if use_yes_price else 'false'}"
+        ),
         provenance=provenance,
         started_at_utc=started_at,
+        use_yes_price=use_yes_price,
     )
     provider = lifecycle_provider or _default_lifecycle_provider
     session.record_lifecycle(
@@ -262,6 +267,7 @@ def run_d2_kalshi_ws_runtime(
             max_events=max_events,
             max_reconnects=max_reconnects,
             persist_legacy_raw_events=False,
+            use_yes_price=use_yes_price,
         ),
         auth,
         websocket_factory=websocket_factory,
@@ -906,15 +912,11 @@ class RuntimeEvidenceSession:
             "validation_report_path": "campaign_validation.json",
         }
         validate_no_secret_payload(summary)
-        _atomic_write_json(self.output_dir / "campaign_summary.json", summary)
-        _atomic_write_json(self.output_dir / "campaign_manifest.json", summary)
-        _atomic_write_json(self.output_dir / "run_metadata.json", summary)
+        _sync_runtime_summary(self.output_dir, summary)
         validation = validate_d2_runtime_artifacts(self.output_dir)
         summary["validation_status"] = validation["status"]
         summary["evidence_classification"] = validation["overall_evidence_classification"]
-        _atomic_write_json(self.output_dir / "campaign_summary.json", summary)
-        _atomic_write_json(self.output_dir / "campaign_manifest.json", summary)
-        _atomic_write_json(self.output_dir / "run_metadata.json", summary)
+        _sync_runtime_summary(self.output_dir, summary)
         return summary
 
     def _new_writer(self) -> EvidenceSegmentWriter:
@@ -1149,8 +1151,11 @@ class RuntimeEvidenceSession:
             "manifest_path": "campaign_manifest.json",
             "validation_report_path": "campaign_validation.json",
         }
-        _atomic_write_json(self.output_dir / "campaign_summary.json", summary)
-        _atomic_write_json(self.output_dir / "run_metadata.json", summary)
+        for name in ("campaign_summary.json", "run_metadata.json"):
+            _atomic_write_json(
+                _runtime_metadata_path(self.output_dir, name),
+                summary,
+            )
         writer_status = self._writer.status_record()
         self._last_open_status_at = observed_at_utc
         self._last_open_status_segment_id = self._writer.segment_id
@@ -1815,6 +1820,9 @@ def _validate_d2_preflight_block(
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         validation = {}
         failures.append(f"campaign_validation unavailable: {exc}")
+    if not isinstance(validation, Mapping):
+        validation = {}
+        failures.append("campaign_validation must be a JSON object")
     try:
         validate_no_secret_payload(summary)
         _validate_runtime_metadata_safety(summary)
@@ -3417,12 +3425,24 @@ def _atomic_write_json(path: Path, payload: Mapping[str, object]) -> None:
     validate_no_secret_payload(payload)
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.tmp")
-    with temporary.open("w", encoding="utf-8") as handle:
-        json.dump(payload, handle, indent=2, sort_keys=True, allow_nan=False)
-        handle.write("\n")
-        handle.flush()
-        os.fsync(handle.fileno())
-    os.replace(temporary, path)
+    descriptor = os.open(
+        temporary,
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+        0o600,
+    )
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            descriptor = -1
+            json.dump(payload, handle, indent=2, sort_keys=True, allow_nan=False)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    except BaseException:
+        if descriptor != -1:
+            os.close(descriptor)
+        temporary.unlink(missing_ok=True)
+        raise
 
 
 def _decimal_seconds(value: Any) -> Decimal:

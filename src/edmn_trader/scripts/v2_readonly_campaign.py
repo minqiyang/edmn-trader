@@ -545,6 +545,7 @@ def run_kalshi_ws_smoke(
     duration_seconds: int,
     max_markets: int,
     now: datetime | None = None,
+    use_yes_price: bool = False,
 ) -> dict[str, object]:
     """Run the bounded authenticated read-only Kalshi WS smoke, or block safely."""
 
@@ -598,6 +599,7 @@ def run_kalshi_ws_smoke(
         market_selection=market_selection,
         auth=auth,
         provenance=provenance,
+        use_yes_price=use_yes_price,
     )
 
 
@@ -767,6 +769,7 @@ def _run_mode_command(argv: list[str]) -> dict[str, object]:
     )
     parser.add_argument("--duration-seconds", type=int, required=True)
     parser.add_argument("--max-markets", type=int, default=1)
+    parser.add_argument("--use-yes-price", action="store_true")
     parser.add_argument("--output-dir", required=True, type=Path)
     parser.add_argument("--campaign-id")
     args = parser.parse_args(argv)
@@ -777,12 +780,14 @@ def _run_mode_command(argv: list[str]) -> dict[str, object]:
             campaign_id=campaign_id,
             duration_seconds=args.duration_seconds,
             max_markets=args.max_markets,
+            use_yes_price=args.use_yes_price,
         )
     return run_kalshi_ws_smoke(
         output_dir=args.output_dir,
         campaign_id=campaign_id,
         duration_seconds=args.duration_seconds,
         max_markets=args.max_markets,
+        use_yes_price=args.use_yes_price,
     )
 
 
@@ -853,6 +858,7 @@ def run_kalshi_ws_campaign(
     duration_seconds: int,
     max_markets: int,
     now: datetime | None = None,
+    use_yes_price: bool = False,
 ) -> dict[str, object]:
     _validate_duration(duration_seconds, allow_seven_day=True)
     generated_at = now or datetime.now(UTC)
@@ -902,6 +908,7 @@ def run_kalshi_ws_campaign(
         market_selection=market_selection,
         auth=auth,
         provenance=provenance,
+        use_yes_price=use_yes_price,
         max_events=1_000_000,
         max_reconnects=1_000,
     )
