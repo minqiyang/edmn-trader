@@ -64,6 +64,7 @@ from edmn_trader.data.evidence_durability import (
     EVIDENCE_SUMMARY_SCHEMA_VERSION,
     EvidenceSegmentWriter,
     RecoveryResult,
+    chain_genesis_hash,
     recover_unterminated_segment,
     verify_segment_chain,
 )
@@ -168,7 +169,12 @@ def _require_empty_runtime_root(root: Path) -> None:
         raise FileExistsError("new D2 runtime requires an empty artifact root")
 
 
-def _contained_artifact_path(root: Path, value: object) -> Path:
+def _contained_artifact_path(
+    root: Path,
+    value: object,
+    *,
+    reject_symlinks: bool = False,
+) -> Path:
     relative = Path(str(value))
     if relative.is_absolute() or ".." in relative.parts:
         raise ValueError("artifact path must be relative to the runtime root")
@@ -180,6 +186,12 @@ def _contained_artifact_path(root: Path, value: object) -> Path:
         or resolved_root not in resolved_candidate.parents
     ):
         raise ValueError("artifact path escapes the runtime root")
+    if reject_symlinks:
+        current = resolved_root
+        for part in relative.parts:
+            current /= part
+            if current.is_symlink():
+                raise ValueError(f"artifact path must not be a symlink: {value}")
     return candidate
 
 
@@ -1458,7 +1470,11 @@ class RuntimeEvidenceSession:
         )
 
 
-def validate_d2_runtime_artifacts(input_dir: Path) -> dict[str, object]:
+def validate_d2_runtime_artifacts(
+    input_dir: Path,
+    *,
+    persist: bool = True,
+) -> dict[str, object]:
     root = Path(input_dir).resolve()
     failures: list[str] = []
     try:
@@ -1480,7 +1496,7 @@ def validate_d2_runtime_artifacts(input_dir: Path) -> dict[str, object]:
         summary = {}
         failures.append(f"campaign_summary unavailable: {exc}")
     if summary.get("status") == "d2_runtime_preflight_blocked":
-        return _validate_d2_preflight_block(root, summary)
+        return _validate_d2_preflight_block(root, summary, persist=persist)
     if summary.get("runtime_schema_version") != D2_RUNTIME_SCHEMA_VERSION:
         failures.append("runtime schema missing or unsupported")
     if summary.get("raw_event_schema_version") != KALSHI_WS_RAW_SCHEMA_VERSION:
@@ -1567,6 +1583,61 @@ def validate_d2_runtime_artifacts(input_dir: Path) -> dict[str, object]:
                 failures.append(f"closed-file hash mismatch: {segment_id}")
             if segment.get("schema_version") != EVIDENCE_SUMMARY_SCHEMA_VERSION:
                 failures.append(f"segment summary schema mismatch: {segment_id}")
+            expected_segment_fields = {
+                "schema_version": EVIDENCE_SUMMARY_SCHEMA_VERSION,
+                "segment_id": segment_id,
+                "segment_created": True,
+                "segment_closed": True,
+                "integrity_scope": "CLOSED_FILE",
+                "last_committed_local_row_index": expected_row_count,
+                "byte_offset": expected_byte_offset,
+                "genesis_hash": chain_genesis_hash(segment_id),
+                "terminal_chain_hash": verified.terminal_chain_hash,
+                "closed_file_sha256": digest,
+                "backup_verification_state": "NOT_VERIFIED",
+                "retention_deletion_eligible": False,
+            }
+            for field, expected in expected_segment_fields.items():
+                if segment.get(field) != expected:
+                    failures.append(
+                        "manifest segment field contradicts durable artifacts: "
+                        f"{segment_id}: {field}"
+                    )
+                if segment_summary.get(field) != expected:
+                    failures.append(
+                        "segment summary field contradicts durable artifacts: "
+                        f"{segment_id}: {field}"
+                    )
+            if segment_summary.get("created_at_utc") != checkpoint.get(
+                "segment_created_at_utc"
+            ):
+                failures.append(f"segment creation timestamp mismatch: {segment_id}")
+            try:
+                created_at = _parse_required_time(
+                    segment_summary.get("created_at_utc"),
+                    "segment summary created_at_utc",
+                )
+                closed_at = _parse_required_time(
+                    segment_summary.get("closed_at_utc"),
+                    "segment summary closed_at_utc",
+                )
+                _require_aware(created_at, "segment summary created_at_utc")
+                _require_aware(closed_at, "segment summary closed_at_utc")
+                if closed_at < created_at:
+                    failures.append(f"segment close timestamp precedes creation: {segment_id}")
+            except ValueError as exc:
+                failures.append(f"segment timing metadata invalid: {segment_id}: {exc}")
+            terminal_reason = segment_summary.get("terminal_reason")
+            rotation_reason = segment_summary.get("rotation_reason")
+            if not isinstance(terminal_reason, str) or not terminal_reason:
+                failures.append(f"segment terminal reason is invalid: {segment_id}")
+            elif terminal_reason == "rotation" and rotation_reason not in {
+                "BYTE_LIMIT",
+                "TIME_LIMIT",
+            }:
+                failures.append(f"segment rotation reason is invalid: {segment_id}")
+            elif terminal_reason != "rotation" and rotation_reason is not None:
+                failures.append(f"segment rotation reason is unexpected: {segment_id}")
             if segment_summary.get("terminal_chain_hash") != segment["terminal_chain_hash"]:
                 failures.append(f"segment summary artifact mismatch: {segment_id}")
             if segment_summary.get("closed_file_sha256") != digest:
@@ -1801,7 +1872,7 @@ def validate_d2_runtime_artifacts(input_dir: Path) -> dict[str, object]:
         "submit_attempts": summary.get("submit_attempts"),
         "strict_verdict": "STRICT NO-GO",
     }
-    if validation_path is not None:
+    if persist and validation_path is not None:
         _atomic_write_json(validation_path, result)
     return result
 
@@ -1809,6 +1880,8 @@ def validate_d2_runtime_artifacts(input_dir: Path) -> dict[str, object]:
 def _validate_d2_preflight_block(
     root: Path,
     summary: Mapping[str, object],
+    *,
+    persist: bool = True,
 ) -> dict[str, object]:
     failures: list[str] = []
     try:
@@ -1930,10 +2003,11 @@ def _validate_d2_preflight_block(
             "failures": failures,
             "strict_verdict": "STRICT NO-GO",
         }
-        try:
-            _atomic_write_json(_runtime_metadata_path(root, "campaign_validation.json"), result)
-        except (OSError, ValueError):
-            pass
+        if persist:
+            try:
+                _atomic_write_json(_runtime_metadata_path(root, "campaign_validation.json"), result)
+            except (OSError, ValueError):
+                pass
         return result
     return expected_validation
 
@@ -3062,9 +3136,21 @@ def recover_d2_runtime_artifacts(
     segment = open_segments[0]
     while True:
         segment_id = str(segment["segment_id"])
-        data_path = _contained_artifact_path(root, segment["data_path"])
-        checkpoint_path = _contained_artifact_path(root, segment["checkpoint_path"])
-        closed_summary_path = data_path.with_name(f"{segment_id}.summary.json")
+        data_path = _contained_artifact_path(
+            root,
+            segment["data_path"],
+            reject_symlinks=True,
+        )
+        checkpoint_path = _contained_artifact_path(
+            root,
+            segment["checkpoint_path"],
+            reject_symlinks=True,
+        )
+        closed_summary_path = _contained_artifact_path(
+            root,
+            data_path.with_name(f"{segment_id}.summary.json").relative_to(root),
+            reject_symlinks=True,
+        )
         if not closed_summary_path.is_file():
             break
         closed_summary = json.loads(closed_summary_path.read_text(encoding="utf-8"))
@@ -3084,9 +3170,18 @@ def recover_d2_runtime_artifacts(
             segment = finalized_record
             break
         next_segment_id = _next_rotated_segment_id(segment_id)
-        next_data_path = data_path.with_name(f"{next_segment_id}.events.jsonl")
-        next_checkpoint_path = data_path.with_name(f"{next_segment_id}.checkpoint.json")
-        next_summary_path = data_path.with_name(f"{next_segment_id}.summary.json")
+        next_data_path = _contained_artifact_path(
+            root,
+            data_path.with_name(f"{next_segment_id}.events.jsonl").relative_to(root),
+        )
+        next_checkpoint_path = _contained_artifact_path(
+            root,
+            data_path.with_name(f"{next_segment_id}.checkpoint.json").relative_to(root),
+        )
+        next_summary_path = _contained_artifact_path(
+            root,
+            data_path.with_name(f"{next_segment_id}.summary.json").relative_to(root),
+        )
         successor_data_exists = next_data_path.exists() or next_data_path.is_symlink()
         successor_checkpoint_exists = (
             next_checkpoint_path.exists() or next_checkpoint_path.is_symlink()
@@ -3114,9 +3209,21 @@ def recover_d2_runtime_artifacts(
 
     segment_id = str(segment["segment_id"])
     next_segment_id = f"{summary['campaign_id']}.recovery.next"
-    data_path = _contained_artifact_path(root, segment["data_path"])
-    checkpoint_path = _contained_artifact_path(root, segment["checkpoint_path"])
-    closed_summary_path = data_path.with_name(f"{segment_id}.summary.json")
+    data_path = _contained_artifact_path(
+        root,
+        segment["data_path"],
+        reject_symlinks=True,
+    )
+    checkpoint_path = _contained_artifact_path(
+        root,
+        segment["checkpoint_path"],
+        reject_symlinks=True,
+    )
+    closed_summary_path = _contained_artifact_path(
+        root,
+        data_path.with_name(f"{segment_id}.summary.json").relative_to(root),
+        reject_symlinks=True,
+    )
     already_finalized = closed_summary_path.is_file()
     if already_finalized:
         closed_summary = json.loads(closed_summary_path.read_text(encoding="utf-8"))
@@ -3153,7 +3260,9 @@ def recover_d2_runtime_artifacts(
         )
     recovery_start_absolute = Path(recovered.next_segment_metadata_path).resolve()
     recovery_start_path = _contained_artifact_path(
-        root, recovery_start_absolute.relative_to(root)
+        root,
+        recovery_start_absolute.relative_to(root),
+        reject_symlinks=True,
     )
     recovery_start = json.loads(recovery_start_path.read_text(encoding="utf-8"))
     recovered_at_utc = _parse_required_time(

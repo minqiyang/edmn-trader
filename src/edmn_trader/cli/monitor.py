@@ -12,6 +12,10 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Literal
 
+from edmn_trader.adapters.kalshi.ws_runtime import (
+    D2_RUNTIME_SCHEMA_VERSION,
+    validate_d2_runtime_artifacts,
+)
 from edmn_trader.data.evidence_policy import V2_THRESHOLD_POLICY
 from edmn_trader.execution.private_live_gate import attempt_private_live_execution
 
@@ -51,6 +55,7 @@ def build_monitor_snapshot(input_dir: Path, *, now: datetime | None = None) -> d
     warnings: list[str] = []
     records = _read_records(input_dir, warnings)
     summaries = _read_summaries(input_dir, warnings) if input_dir.exists() else {}
+    summaries = _refresh_d2_validation(input_dir, summaries, warnings)
     live_gate = attempt_private_live_execution().to_record()
 
     run_info = _run_info(input_dir, generated_at, summaries)
@@ -107,6 +112,37 @@ def build_monitor_snapshot(input_dir: Path, *, now: datetime | None = None) -> d
         },
         "validation": _validation_status(records, summaries),
     }
+
+
+def _refresh_d2_validation(
+    input_dir: Path,
+    summaries: Mapping[str, Mapping[str, object]],
+    warnings: list[str],
+) -> dict[str, dict[str, object]]:
+    campaign = summaries.get("campaign_summary.json", {})
+    if (
+        campaign.get("runtime_schema_version") != D2_RUNTIME_SCHEMA_VERSION
+        or campaign.get("status") == "d2_runtime_running"
+    ):
+        return dict(summaries)
+    try:
+        validation = validate_d2_runtime_artifacts(input_dir, persist=False)
+    except Exception as exc:  # The monitor must fail closed at this boundary.
+        validation = {
+            "runtime_schema_version": D2_RUNTIME_SCHEMA_VERSION,
+            "status": "fail",
+            "overall_evidence_classification": "FAIL",
+            "failures": [f"runtime validation raised {type(exc).__name__}: {exc}"],
+            "strict_verdict": "STRICT NO-GO",
+        }
+    if validation.get("status") in {"fail", "blocked"}:
+        warnings.append("D2_RUNTIME_VALIDATION_FAILED: persisted evidence was revalidated")
+    refreshed = dict(summaries)
+    refreshed["campaign_validation.json"] = {
+        **summaries.get("campaign_validation.json", {}),
+        **validation,
+    }
+    return refreshed
 
 
 def render_snapshot(

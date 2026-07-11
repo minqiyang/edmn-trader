@@ -3742,3 +3742,106 @@ def test_public_ws_entrypoint_wires_unified_yes_price_mode(
     assert summary["use_yes_price"] is True
     assert summary["pricing_mode_and_source"] == "explicit_subscription_use_yes_price_true"
     assert summary["rebuild_summaries"][0]["pricing_modes"] == ["UNIFIED_YES_PRICE"]
+
+
+def test_monitor_revalidates_d2_artifacts_without_trusting_stale_report(
+    tmp_path: Path,
+) -> None:
+    session = _session(tmp_path, configured_duration_seconds=1)
+    summary = session.close(
+        ended_at_utc=START + timedelta(seconds=1),
+        terminal_reason="bounded_duration_complete",
+        stop_requested=False,
+        connection_established=True,
+        subscription_acknowledged=True,
+        blocker_code=None,
+    )
+    validation_path = tmp_path / "campaign_validation.json"
+    validation_before = validation_path.read_bytes()
+    data_path = tmp_path / summary["segment_summaries"][0]["data_path"]
+    data_path.write_bytes(data_path.read_bytes() + b'{"tampered":true}\n')
+
+    snapshot = build_monitor_snapshot(tmp_path, now=START + timedelta(seconds=1))
+
+    assert snapshot["campaign"]["status"] == "D2_RUNTIME_VALIDATION_FAILED"
+    assert snapshot["campaign"]["validation_status"] == "fail"
+    assert snapshot["run_info"]["health"] == "BLOCKED"
+    assert validation_path.read_bytes() == validation_before
+
+
+def test_validator_rejects_tampered_segment_durability_metadata(tmp_path: Path) -> None:
+    session = _session(tmp_path, configured_duration_seconds=1)
+    summary = session.close(
+        ended_at_utc=START + timedelta(seconds=1),
+        terminal_reason="bounded_duration_complete",
+        stop_requested=False,
+        connection_established=True,
+        subscription_acknowledged=True,
+        blocker_code=None,
+    )
+    segment_summary_path = tmp_path / summary["segment_summaries"][0]["summary_path"]
+    segment_baseline = json.loads(segment_summary_path.read_text(encoding="utf-8"))
+    fixed_names = ("campaign_summary.json", "campaign_manifest.json", "run_metadata.json")
+    fixed_baselines = {
+        name: json.loads((tmp_path / name).read_text(encoding="utf-8")) for name in fixed_names
+    }
+    mutations = {
+        "genesis_hash": "0" * 64,
+        "segment_closed": False,
+        "backup_verification_state": "VERIFIED",
+        "retention_deletion_eligible": True,
+    }
+
+    for field, value in mutations.items():
+        segment_tampered = {**segment_baseline, field: value}
+        segment_summary_path.write_text(
+            json.dumps(segment_tampered) + "\n",
+            encoding="utf-8",
+        )
+        for name, baseline in fixed_baselines.items():
+            fixed_tampered = json.loads(json.dumps(baseline))
+            fixed_tampered["segment_summaries"][0][field] = value
+            (tmp_path / name).write_text(
+                json.dumps(fixed_tampered) + "\n",
+                encoding="utf-8",
+            )
+
+        validation = validate_d2_runtime_artifacts(tmp_path)
+
+        assert validation["status"] == "fail", field
+        assert any(field in failure for failure in validation["failures"]), field
+
+        segment_summary_path.write_text(
+            json.dumps(segment_baseline) + "\n",
+            encoding="utf-8",
+        )
+        for name, baseline in fixed_baselines.items():
+            (tmp_path / name).write_text(
+                json.dumps(baseline) + "\n",
+                encoding="utf-8",
+            )
+
+    assert validate_d2_runtime_artifacts(tmp_path)["status"] == "pass"
+
+
+def test_runtime_recovery_rejects_in_root_segment_symlink_before_mutation(
+    tmp_path: Path,
+) -> None:
+    session = _session(tmp_path, configured_duration_seconds=300)
+    session._writer._handle.close()
+    summary_path = tmp_path / "campaign_summary.json"
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    real_data_path = tmp_path / summary["segment_summaries"][-1]["data_path"]
+    decoy_path = real_data_path.with_name("decoy.events.jsonl")
+    decoy_path.write_bytes(real_data_path.read_bytes() + b"partial-tail")
+    alias_path = real_data_path.with_name("alias.events.jsonl")
+    alias_path.symlink_to(decoy_path)
+    summary["segment_summaries"][-1]["data_path"] = str(alias_path.relative_to(tmp_path))
+    summary_path.write_text(json.dumps(summary) + "\n", encoding="utf-8")
+    decoy_before = decoy_path.read_bytes()
+
+    with pytest.raises(ValueError, match="must not be a symlink"):
+        recover_d2_runtime_artifacts(tmp_path, recovered_at_utc=START + timedelta(seconds=1))
+
+    assert decoy_path.read_bytes() == decoy_before
+    assert not (tmp_path / "runtime_recovery.json").exists()
