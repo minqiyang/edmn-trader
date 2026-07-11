@@ -163,11 +163,9 @@ def run_d2_kalshi_ws_runtime(
     last_lifecycle_poll = started_at
     lifecycle_blocker: str | None = None
 
-    def poll_lifecycle(observed_at: datetime, *, force: bool = False) -> None:
+    def poll_lifecycle(observed_at: datetime) -> None:
         nonlocal last_lifecycle_poll, lifecycle_blocker
-        if not force and (
-            observed_at - last_lifecycle_poll
-        ).total_seconds() < 60:
+        if (observed_at - last_lifecycle_poll).total_seconds() < 60:
             return
         last_lifecycle_poll = observed_at
         try:
@@ -200,7 +198,7 @@ def run_d2_kalshi_ws_runtime(
         monotonic_ns=monotonic_ns,
     )
     ended_at = clock()
-    poll_lifecycle(ended_at, force=True)
+    poll_lifecycle(ended_at)
     blocker_code = recorder.blocker_code or lifecycle_blocker
     elapsed = _decimal_seconds(ended_at - started_at)
     return session.close(
@@ -1354,6 +1352,7 @@ def _derive_runtime_validation(
     lifecycle_records: list[Mapping[str, object]] = []
     counts: Counter[str] = Counter()
     selected_market = str(summary["market_ticker"])
+    validation_rebuilder = KalshiWsBookRebuilder()
     for record in records:
         record_type = record["record_type"]
         if record_type == "connection_evidence":
@@ -1373,10 +1372,18 @@ def _derive_runtime_validation(
             raise ValueError("durable public trade evidence must be a list")
         counts["trade_count"] += len(trades)
         _accumulate_validation_sequence(sequence, event)
+        rebuilt = validation_rebuilder.apply(event)
+        expected_rebuild = {
+            "disposition": rebuilt.disposition,
+            "reason": rebuilt.reason,
+            "frame": rebuilt.frame.to_record() if rebuilt.frame is not None else None,
+        }
+        if record.get("d2b_rebuild") != expected_rebuild:
+            raise ValueError("durable D2B evidence contradicts independent rebuild")
         _accumulate_validation_rebuild(
             rebuild,
             event,
-            _required_mapping(record, "d2b_rebuild"),
+            expected_rebuild,
             selected_market,
             counts,
         )
@@ -1773,6 +1780,17 @@ def recover_d2_runtime_artifacts(
         "snapshot_required": recovered.snapshot_required,
         "inherited_book_state": recovered.inherited_book_state,
     }
+    recovered_records: list[dict[str, object]] = []
+    for closed_segment in summary["segment_summaries"]:
+        _validate_runtime_records(
+            root / str(closed_segment["data_path"]),
+            Counter(),
+            recovered_records,
+        )
+    _, durable_counts = _derive_runtime_validation(summary, recovered_records)
+    summary.update(durable_counts)
+    summary["raw_event_count"] = durable_counts["event_count"]
+    summary["public_trade_count"] = durable_counts["trade_count"]
     recovery = {
         "runtime_schema_version": D2_RUNTIME_SCHEMA_VERSION,
         "campaign_id": summary["campaign_id"],

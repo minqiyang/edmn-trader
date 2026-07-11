@@ -24,8 +24,10 @@ numbers while the repository is still in early research scaffolding.
   per-connection subscription acknowledgment, selection-policy provenance,
   admitted selected-market freshness, all-segment classification, detached
   provenance, checkpoint count/offset validation, exact threshold-policy
-  validation, bounded lifecycle retries, recursive private-account field
-  rejection, monitor fail-closed behavior, rotation, and coherent crash recovery.
+  validation, independent D2B replay validation, bounded lifecycle retries,
+  recursive private-account field rejection, typed nested subscription
+  rejection, monitor fail-closed behavior, rotation, and tail-reconciling crash
+  recovery.
   Legacy v1 artifacts remain readable but are not selected for new WebSocket
   runs. Tests are mocked and public live trading remains disabled.
 - Added D2D orthogonal evidence classification, timestamp-derived duration,

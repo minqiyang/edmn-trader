@@ -16,6 +16,7 @@ from edmn_trader.adapters.kalshi.public_evidence import (
     ConnectionEvidenceType,
 )
 from edmn_trader.adapters.kalshi.ws_auth import KalshiWsAuthConfig
+from edmn_trader.adapters.kalshi.ws_book_rebuild import KalshiWsBookRebuilder
 from edmn_trader.adapters.kalshi.ws_events import (
     KalshiWsIntegrityTracker,
     SequenceContinuityPolicy,
@@ -1076,6 +1077,89 @@ def test_runtime_crash_recovery_removes_only_partial_tail_and_never_restarts(
     assert monitor["run_info"]["health"] == "BLOCKED"
 
 
+def test_runtime_crash_recovery_reconciles_complete_tail_record_counts(
+    tmp_path: Path,
+) -> None:
+    session = _session(tmp_path, configured_duration_seconds=300)
+    event = _tracker().record(
+        {"type": "heartbeat", "sid": 41, "seq": 1},
+        local_row_index=1,
+        received_at_utc=START + timedelta(seconds=1),
+        received_monotonic_ns=1,
+    )
+    rebuilt = KalshiWsBookRebuilder().apply(event)
+    session._writer.append(
+        {
+            "schema_version": ws_runtime.D2_RUNTIME_RECORD_SCHEMA_VERSION,
+            "record_type": "raw_transport_event",
+            "campaign_id": session.campaign_id,
+            "local_row_index": session._evidence_local_row_index + 1,
+            "observed_at_utc": event.received_at_utc.isoformat(),
+            "d2a_event": event.to_record(),
+            "d2b_rebuild": {
+                "disposition": rebuilt.disposition,
+                "reason": rebuilt.reason,
+                "frame": None,
+            },
+            "d2c_public_trades": [],
+        }
+    )
+    session._writer._handle.close()
+
+    recovery = recover_d2_runtime_artifacts(
+        tmp_path,
+        recovered_at_utc=START + timedelta(seconds=10),
+    )
+    summary = json.loads((tmp_path / "campaign_summary.json").read_text())
+
+    assert recovery["validation_status"] == "pass"
+    assert summary["event_count"] == 1
+    assert summary["raw_event_count"] == 1
+
+
+def test_validator_rebuilds_d2b_instead_of_trusting_persisted_frame(
+    tmp_path: Path,
+) -> None:
+    session = _session(tmp_path, configured_duration_seconds=1)
+    event = _tracker().record(
+        {
+            "type": "orderbook_snapshot",
+            "sid": 41,
+            "seq": 1,
+            "msg": {
+                "market_ticker": MARKET,
+                "yes_dollars_fp": [["0.42", "3"]],
+                "no_dollars_fp": [],
+            },
+        },
+        local_row_index=1,
+        received_at_utc=START,
+        received_monotonic_ns=1,
+    )
+    session.record_event(event)
+    summary = session.close(
+        ended_at_utc=START + timedelta(seconds=1),
+        terminal_reason="bounded_duration_complete",
+        stop_requested=False,
+        connection_established=True,
+        subscription_acknowledged=True,
+        blocker_code=None,
+    )
+    records = []
+    for segment in summary["segment_summaries"]:
+        records.extend(
+            json.loads(line)
+            for line in (tmp_path / segment["data_path"]).read_text().splitlines()
+        )
+    raw_record = next(
+        record for record in records if record["record_type"] == "raw_transport_event"
+    )
+    raw_record["d2b_rebuild"]["frame"]["terminal_state_hash"] = "0" * 64
+
+    with pytest.raises(ValueError, match="independent rebuild"):
+        ws_runtime._derive_runtime_validation(summary, records)
+
+
 def test_runtime_validator_rejects_tampered_durable_record(tmp_path: Path) -> None:
     session = _session(tmp_path, configured_duration_seconds=1)
     session.record_event(
@@ -1245,11 +1329,14 @@ def test_failed_lifecycle_polling_remains_rate_limited(
     assert 1 < len(calls) <= 5
     assert all(
         current - previous >= 60
-        for previous, current in zip(calls, calls[1:-1], strict=False)
+        for previous, current in zip(calls, calls[1:], strict=False)
     )
 
 
-@pytest.mark.parametrize("forbidden_key", ["api_key", "order_id"])
+@pytest.mark.parametrize(
+    "forbidden_key",
+    ["api_key", "order_id", "orders", "fills", "account_number"],
+)
 def test_actual_runtime_rejects_nested_private_fields_without_persisting_them(
     tmp_path: Path,
     forbidden_key: str,

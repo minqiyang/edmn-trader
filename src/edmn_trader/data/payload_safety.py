@@ -20,15 +20,35 @@ _FORBIDDEN_RAW_KEY_PARTS = (
 _PRIVATE_ACCOUNT_KEYS = {
     "account",
     "account_id",
+    "account_number",
+    "accounts",
     "client_order_id",
     "fill",
     "fill_id",
+    "fills",
     "member_id",
     "order",
     "order_id",
+    "orders",
+    "portfolio",
     "portfolio_id",
+    "portfolios",
+    "position",
+    "positions",
+    "user",
     "user_id",
+    "users",
 }
+_PRIVATE_ACCOUNT_PREFIXES = (
+    "account_",
+    "client_order_",
+    "fill_",
+    "member_",
+    "order_",
+    "portfolio_",
+    "position_",
+    "user_",
+)
 
 
 def validate_no_secret_payload(value: Mapping[str, Any], *, path: str = "payload") -> None:
@@ -50,7 +70,10 @@ def validate_no_private_account_payload(
     """Reject private account/order/fill fields from public market-data evidence."""
 
     for key, item in value.items():
-        if str(key).lower() in _PRIVATE_ACCOUNT_KEYS:
+        key_text = str(key).lower()
+        if key_text in _PRIVATE_ACCOUNT_KEYS or key_text.startswith(
+            _PRIVATE_ACCOUNT_PREFIXES
+        ):
             raise ValueError(f"{path}.{key} must not contain private account/order data")
         if isinstance(item, Mapping):
             validate_no_private_account_payload(item, path=f"{path}.{key}")

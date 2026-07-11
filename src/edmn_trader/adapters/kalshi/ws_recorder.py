@@ -363,9 +363,15 @@ def _is_subscription_rejection(payload: Mapping[str, object], message_type: str)
     if payload.get("id") != 1:
         return False
     lowered = message_type.lower()
+    nested = payload.get("msg")
+    nested_error = (
+        nested.get("error") or nested.get("code") or nested.get("message")
+        if isinstance(nested, Mapping)
+        else None
+    )
     return (
         "reject" in lowered
-        or lowered == "error" and bool(payload.get("error"))
+        or lowered == "error" and bool(payload.get("error") or nested_error or nested)
         or str(payload.get("cmd") or "").lower() == "subscribe" and bool(payload.get("error"))
     )
 

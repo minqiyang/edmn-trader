@@ -76,6 +76,12 @@ manifest, and segment summary; threshold values/version/source commit must
 match the reviewed policy; failed lifecycle polls remain rate-limited; and
 nested private account/order/fill fields are rejected before D2A persistence.
 
+The continuation pass closed the final detached-review gaps: recovery now
+reconciles complete post-checkpoint rows from durable records, validation
+replays D2A through a fresh D2B rebuilder, private-field matching covers common
+containers/prefixes, lifecycle shutdown respects the same retry interval, and
+nested subscription errors emit typed rejection evidence.
+
 ## D2D evidence classification, durability, and performance
 
 D2D turns the D2A-D2C fixture contracts into an explicit software evidence

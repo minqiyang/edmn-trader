@@ -187,6 +187,33 @@ def test_ws_recorder_does_not_promote_partial_or_unbound_subscription_ack(
     assert result.subscription_acknowledged is False
 
 
+def test_ws_recorder_records_nested_subscription_rejection(tmp_path: Path) -> None:
+    connection_events = []
+    result = record_kalshi_demo_ws_orderbook(
+        KalshiWsRecorderConfig(
+            campaign_id="c1",
+            market_tickers=("DEMO-MARKET",),
+            raw_events_path=tmp_path / "raw.jsonl",
+            duration_seconds=1,
+            max_events=1,
+        ),
+        KalshiWsAuthConfig(
+            api_key_id="fake",
+            private_key_path=_fake_private_key_path(tmp_path),
+        ),
+        websocket_factory=lambda *_args, **_kwargs: _FakeWebSocket(
+            [{"type": "error", "id": 1, "msg": {"code": "invalid_subscription"}}]
+        ),
+        now=lambda: datetime(2026, 7, 3, 20, 0, tzinfo=UTC),
+        connection_callback=connection_events.append,
+    )
+
+    assert result.subscription_acknowledged is False
+    assert ConnectionEvidenceType.SUBSCRIPTION_REJECTED in {
+        event.event_type for event in connection_events
+    }
+
+
 @pytest.mark.parametrize("raw", ["[]", "null", "1"])
 def test_ws_payload_loader_rejects_non_object_json(raw: str) -> None:
     with pytest.raises(ValueError, match="JSON object"):

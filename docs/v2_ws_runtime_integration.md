@@ -94,6 +94,11 @@ attempt clock so a venue outage cannot create a request per WebSocket frame.
 Private account, order, and fill fields are rejected recursively before raw D2A
 persistence.
 
+Recovery derives runtime counts from the closed chain, including complete tail
+rows written after the last checkpoint. Validator rebuild integrity comes from
+replaying durable D2A envelopes through a fresh D2B instance and comparing the
+full persisted result, not from trusting stored frame validity or hashes.
+
 ## Safety
 
 D2E tests use mocked WebSocket and lifecycle transports only. This delivery
