@@ -97,6 +97,55 @@ def test_stale_error_does_not_mutate_current_acknowledged_binding() -> None:
     assert snapshot.subscription_binding_state is SubscriptionBindingState.ACKNOWLEDGED
     assert snapshot.admission_status is AdmissionStatus.ADMITTED
 
+
+def test_rejection_and_ack_conflict_within_the_same_request_identity() -> None:
+    tracker = KalshiWsIntegrityTracker(
+        campaign_id="binding-conflicts",
+        requested_market_tickers=("DEMO-MARKET",),
+    )
+    tracker.start_connection()
+    tracker.bind_subscription(command_id=1)
+    rejection = tracker.record(
+        {
+            "type": "rejected",
+            "id": 1,
+            "msg": {"channel": "orderbook_delta"},
+        },
+        local_row_index=1,
+        received_at_utc=RECEIVED_AT,
+        received_monotonic_ns=1,
+    )
+    duplicate = tracker.record(
+        {
+            "type": "rejected",
+            "id": 1,
+            "msg": {"channel": "orderbook_delta"},
+        },
+        local_row_index=2,
+        received_at_utc=RECEIVED_AT,
+        received_monotonic_ns=2,
+    )
+    late_ack = tracker.record(
+        {
+            "type": "subscribed",
+            "id": 1,
+            "sid": 41,
+            "msg": {"channel": "orderbook_delta"},
+        },
+        local_row_index=3,
+        received_at_utc=RECEIVED_AT,
+        received_monotonic_ns=3,
+    )
+
+    assert rejection.subscription_binding_state is SubscriptionBindingState.REJECTED
+    assert duplicate.subscription_binding_observation is (
+        SubscriptionBindingObservation.DUPLICATE_REJECTION
+    )
+    assert late_ack.subscription_binding_state is SubscriptionBindingState.CONFLICTED
+    assert late_ack.subscription_binding_observation is (
+        SubscriptionBindingObservation.CONFLICTING_ACK
+    )
+
 RECEIVED_AT = datetime(2026, 7, 10, 1, 2, 3, tzinfo=UTC)
 
 

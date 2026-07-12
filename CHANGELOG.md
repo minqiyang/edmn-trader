@@ -13,6 +13,10 @@ numbers while the repository is still in early research scaffolding.
   request/ACK/SID bindings. Invalid IDs and channels fail before mutation;
   legacy v1 binding evidence remains readable. No production or order path was
   added.
+- Corrected rejection replay across reconnects. A valid next-generation request
+  may terminate rejected without conflicting with the prior connection, while
+  ACK/rejection contradictions within one complete request identity conflict and
+  duplicate rejections remain idempotent.
 - Added D2E-F2 native-envelope coherence and binding-state fail-close behavior.
   Conflicting top-level/nested `type`, `channel`, `id`, or `sid` values and
   Boolean identifiers are typed exclusions; exact duplicate ACKs are

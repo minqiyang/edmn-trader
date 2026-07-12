@@ -1560,6 +1560,63 @@ def test_validator_replays_exact_and_stale_rejections_independently() -> None:
         )
 
 
+def test_validator_accepts_next_generation_rejection_after_reconnect() -> None:
+    tracker = KalshiWsIntegrityTracker(
+        campaign_id="reconnect-rejection",
+        requested_market_tickers=(MARKET,),
+    )
+    tracker.start_connection()
+    first_request = replace(
+        tracker.bind_subscription(command_id=1, created_at_utc=START)[0],
+        send_outcome="SENT",
+    )
+    first_ack = tracker.record(
+        {
+            "type": "subscribed",
+            "id": 1,
+            "sid": 41,
+            "msg": {"channel": "orderbook_delta"},
+        },
+        local_row_index=1,
+        received_at_utc=START,
+        received_monotonic_ns=1,
+    )
+    bindings: dict[object, dict[str, object]] = {}
+    requests = {(first_request.connection_id, first_request.channel): first_request}
+    ws_runtime._replay_channel_binding(first_ack, bindings, requests)
+
+    tracker.start_connection()
+    second_request = replace(
+        tracker.bind_subscription(
+            command_id=2,
+            created_at_utc=START + timedelta(seconds=1),
+        )[0],
+        send_outcome="SENT",
+    )
+    rejection = tracker.record(
+        {
+            "type": "rejected",
+            "id": 2,
+            "msg": {"channel": "orderbook_delta"},
+        },
+        local_row_index=2,
+        received_at_utc=START + timedelta(seconds=1),
+        received_monotonic_ns=2,
+    )
+    requests[(second_request.connection_id, second_request.channel)] = second_request
+    ws_runtime._replay_channel_binding(rejection, bindings, requests)
+
+    assert bindings["orderbook_delta"] == {
+        "sid": None,
+        "state": SubscriptionBindingState.REJECTED,
+        "generation": 2,
+        "request_id": 2,
+        "connection_id": second_request.connection_id,
+        "connection_epoch": 2,
+        "run_request_index": 2,
+    }
+
+
 def test_validator_rejects_duplicate_or_transitioned_send_outcome(tmp_path: Path) -> None:
     session = _session(tmp_path, configured_duration_seconds=1)
     summary = session.close(

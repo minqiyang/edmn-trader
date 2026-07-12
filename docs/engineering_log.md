@@ -1640,3 +1640,8 @@ pending record before send. Validation reconstructs the full run history rather
 than trusting inbound event annotations or runtime summaries. Synthetic tests
 cover invalid allocator input, reconnect progression, split channel commands,
 ACK conflicts, D2B/D2C isolation, recovery, and 100k streaming validation.
+
+The post-review correction aligns rejection transitions with the same full-run
+identity model. A new connection and generation can reject cleanly; duplicate
+rejections are idempotent; ACK then rejection or rejection then ACK for one
+request conflicts. Stale rejection evidence cannot mutate the active binding.

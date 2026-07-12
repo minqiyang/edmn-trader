@@ -707,6 +707,8 @@ class RuntimeEvidenceSession:
             ExclusionReason.CHANNEL_TYPE_MISMATCH,
         } or event.subscription_binding_observation is (
             SubscriptionBindingObservation.CONFLICTING_ACK
+        ) or event.subscription_binding_observation is (
+            SubscriptionBindingObservation.CONFLICTING_REJECTION
         )
         self._binding_failure_observed |= binding_failure
         self._binding_failure_count += int(binding_failure)
@@ -2401,23 +2403,47 @@ def _replay_channel_binding(
                     "connection_epoch": request.connection_epoch,
                     "run_request_index": request.run_request_index,
                 }
+                expected = SubscriptionBindingState.REJECTED
+                expected_observation = SubscriptionBindingObservation.REJECTED
             elif (
                 binding["connection_id"] == event.connection_id
                 and binding["generation"] == request.subscription_generation
                 and binding["request_id"] == request.native_command_id
             ):
-                binding["state"] = SubscriptionBindingState.REJECTED
+                if binding["state"] is SubscriptionBindingState.REJECTED:
+                    expected = SubscriptionBindingState.REJECTED
+                    expected_observation = (
+                        SubscriptionBindingObservation.DUPLICATE_REJECTION
+                    )
+                else:
+                    binding["state"] = SubscriptionBindingState.CONFLICTED
+                    expected = SubscriptionBindingState.CONFLICTED
+                    expected_observation = (
+                        SubscriptionBindingObservation.CONFLICTING_REJECTION
+                    )
+            elif (
+                request.subscription_generation == binding["generation"] + 1
+                and request.native_command_id != binding["request_id"]
+            ):
+                bindings[envelope.channel] = {
+                    "sid": None,
+                    "state": SubscriptionBindingState.REJECTED,
+                    "generation": request.subscription_generation,
+                    "request_id": request.native_command_id,
+                    "connection_id": event.connection_id,
+                    "connection_epoch": request.connection_epoch,
+                    "run_request_index": request.run_request_index,
+                }
+                expected = SubscriptionBindingState.REJECTED
+                expected_observation = SubscriptionBindingObservation.REJECTED
             else:
                 raise ValueError("D2A rejection contradicts active binding identity")
-            expected = SubscriptionBindingState.REJECTED
         else:
             expected = SubscriptionBindingState.REQUEST_MISMATCH
+            expected_observation = SubscriptionBindingObservation.REJECTED
         if event.subscription_binding_state is not expected:
             raise ValueError("D2A rejection state contradicts independent replay")
-        if (
-            event.subscription_binding_observation
-            is not SubscriptionBindingObservation.REJECTED
-        ):
+        if event.subscription_binding_observation is not expected_observation:
             raise ValueError("D2A rejection observation contradicts replay")
         return
     if envelope.native_type not in {"orderbook_snapshot", "orderbook_delta", "trade"}:
@@ -2805,6 +2831,8 @@ def _derive_runtime_validation(
             ExclusionReason.CHANNEL_TYPE_MISMATCH,
         } or event.subscription_binding_observation is (
             SubscriptionBindingObservation.CONFLICTING_ACK
+        ) or event.subscription_binding_observation is (
+            SubscriptionBindingObservation.CONFLICTING_REJECTION
         ):
             counts["binding_failure_count"] += 1
         last_event_at = event.received_at_utc

@@ -16,6 +16,12 @@ Boolean, nonpositive, oversized, noninteger IDs and unknown channels without
 state mutation. Legacy v1 evidence remains readable; new runtime evidence uses
 subscription identity v2. Live trading remains disabled.
 
+The final reconnect correction treats a valid request in the next connection
+epoch and channel generation as a new current identity even when it is rejected.
+The prior acknowledged request stays historical; the new binding is untrusted
+and recovery requires another request/generation. Contradictory ACK and rejection
+frames for the same complete request identity instead conflict fail-closed.
+
 ## D2E-F2 native-envelope and binding coherence
 
 D2E-F2 closes the three findings that blocked PR #129. One pure native-envelope

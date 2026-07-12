@@ -173,6 +173,8 @@ class SubscriptionBindingObservation(StrEnum):
     CONFLICTING_ACK = "CONFLICTING_ACK"
     STALE_ACK = "STALE_ACK"
     REJECTED = "REJECTED"
+    DUPLICATE_REJECTION = "DUPLICATE_REJECTION"
+    CONFLICTING_REJECTION = "CONFLICTING_REJECTION"
 
 
 class ExclusionReason(StrEnum):
@@ -816,23 +818,34 @@ class KalshiWsIntegrityTracker:
                 else:
                     binding.state = SubscriptionBindingState.CONFLICTED
                     binding_observation = SubscriptionBindingObservation.CONFLICTING_ACK
-            else:
+            elif binding.state is SubscriptionBindingState.REQUESTED:
                 binding.state = SubscriptionBindingState.ACKNOWLEDGED
                 binding.sid = native_sid
                 binding_observation = SubscriptionBindingObservation.ACKNOWLEDGED
+            else:
+                binding.state = SubscriptionBindingState.CONFLICTED
+                binding_observation = SubscriptionBindingObservation.CONFLICTING_ACK
         elif (
             envelope.rejection is None
             and binding is not None
             and native_type in {"error", "rejected"}
         ):
-            event_binding_state = (
-                SubscriptionBindingState.REJECTED
-                if native_command_id == binding.command_id
-                else SubscriptionBindingState.REQUEST_MISMATCH
-            )
             if native_command_id == binding.command_id:
-                binding.state = SubscriptionBindingState.REJECTED
-            binding_observation = SubscriptionBindingObservation.REJECTED
+                if binding.state is SubscriptionBindingState.REQUESTED:
+                    binding.state = SubscriptionBindingState.REJECTED
+                    binding_observation = SubscriptionBindingObservation.REJECTED
+                elif binding.state is SubscriptionBindingState.REJECTED:
+                    binding_observation = (
+                        SubscriptionBindingObservation.DUPLICATE_REJECTION
+                    )
+                else:
+                    binding.state = SubscriptionBindingState.CONFLICTED
+                    binding_observation = (
+                        SubscriptionBindingObservation.CONFLICTING_REJECTION
+                    )
+            else:
+                event_binding_state = SubscriptionBindingState.REQUEST_MISMATCH
+                binding_observation = SubscriptionBindingObservation.REJECTED
         native_seq = _native_identifier(payload, "seq")
         if (
             native_type == "orderbook_snapshot"

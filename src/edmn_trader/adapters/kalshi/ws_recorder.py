@@ -232,6 +232,8 @@ def record_kalshi_demo_ws_orderbook(
                     rejected = (
                         event.native_type in {"error", "rejected"}
                         and event.subscription_binding_state.value == "REJECTED"
+                        and event.subscription_binding_observation is not None
+                        and event.subscription_binding_observation.value == "REJECTED"
                         and event.subscription_id == event.subscription_command_id
                     )
                     row = event.to_record()
