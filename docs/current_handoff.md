@@ -20,15 +20,18 @@ lifecycle candidate's orderbook before reporting the eligible count, and emits
 cursor-exhaustion fields, a versioned policy hash, primary and multi-label
 rejection totals, and up to 100 hashed near-miss summaries.
 
-The same audit found a separate authoritative field-contract error:
-Kalshi defines `occurrence_datetime` as the recorded time when the underlying
-event occurred. It remains preserved in evidence but no longer participates in
-the prospective lifecycle deadline. This correction did not create any
-additional candidate in the audit shadow policy. The strict canary rejection
-of every `can_close_early=true` market remains unchanged because the official
-schema provides no structured earliest-close guarantee. Sports/match, complete
-event metadata, expected-expiration, nonempty orderbook, Demo-only, and
-disabled-live boundaries also remain unchanged.
+The post-audit candidate revalidation found a separate contract ambiguity.
+Kalshi's changelog defines `occurrence_datetime` as the recorded time when the
+underlying event occurred, but Demo returned a future value equal to
+`close_time` and `expected_expiration_time`. The audit shadow policy showed that
+removing occurrence from the deadline created no additional candidate, but the
+official/Demo contradiction still blocks live progression. Selection profile
+v3 therefore retains occurrence as a conservative deadline until the venue
+clarifies the field. The strict canary rejection of every
+`can_close_early=true` market remains unchanged because the official schema
+provides no structured earliest-close guarantee. Sports/match, complete event
+metadata, expected-expiration, nonempty orderbook, Demo-only, and disabled-live
+boundaries also remain unchanged.
 
 ## D2B omitted empty-side contract correction
 
