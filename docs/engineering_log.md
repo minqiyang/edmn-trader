@@ -240,12 +240,13 @@ orderbooks, and later results contained non-empty books. The old selector read
 only those first 20 records, did not follow the cursor, and collapsed HTTP,
 parse, and eligibility failures into one blocker.
 
-The corrected selector follows at most five 1,000-market pages, maps REST
-statuses into the lifecycle gate while preserving the raw value, prioritizes
-current quote-size indicators before bounded orderbook probes, and emits
-structured blockers. A five-minute smoke uses a 900-second safety buffer;
-seven-day selection retains the strict 86,400-second buffer. No production or
-order-write behavior is added.
+The initial correction followed five 1,000-market pages, mapped REST statuses
+into the lifecycle gate while preserving the raw value, prioritized current
+quote-size indicators before bounded orderbook probes, and emitted structured
+blockers. Round 8J4 later raised the bound to 100 pages and made cursor
+exhaustion mandatory for complete coverage. A five-minute smoke uses a
+900-second safety buffer; seven-day selection retains the strict 86,400-second
+buffer. No production or order-write behavior is added.
 
 ## Round 8B public lifecycle gates
 
@@ -1504,12 +1505,13 @@ early-close condition. The run's JSONL integrity remained clean, but the market
 lifecycle made the campaign evidence invalid; the campaign and watcher were
 terminated with their root-specific supervisors using bounded TERM handling.
 
-The public lifecycle gate now treats `close_time` as insufficient when earlier
-expected-expiration, occurrence, or early-close metadata exists. It fetches
-event metadata for long-horizon discovery, rejects unsafe early-close and
-sports/match markets by default, records the conservative deadline in the
-manifest, and separates data-integrity status from market-lifecycle evidence
-validity. The public live gate remains disabled.
+The public lifecycle gate treats `close_time` as insufficient when earlier
+expected-expiration or explicit early-close metadata exists. It preserves
+occurrence as observational evidence, fetches event metadata for long-horizon
+discovery, rejects unsafe early-close and sports/match markets by default,
+records the conservative deadline in the manifest, and separates
+data-integrity status from market-lifecycle evidence validity. The public live
+gate remains disabled.
 
 ## D2B channel-scoped identity correction
 
@@ -1563,3 +1565,33 @@ terminal state hash but retain different raw payload hashes. Runtime and the
 independent validator use the same parser through separate rebuild instances;
 durable validation still compares every generated frame and terminal hash.
 No production, account, order-write, or live-gate behavior changed.
+
+## Round 8J4 candidate-discovery integrity audit
+
+Repeated six-hour availability checks reported ten pages, 10,000 markets,
+complete coverage, and no canary candidate. The implementation revealed that
+the ten-page loop set `coverage_complete=true` unconditionally after the loop,
+even when the response cursor remained. Kalshi's official pagination contract
+requires following cursors until the cursor is null. A single audit-only Demo
+scan then exhausted 74 pages and 73,915 distinct records returned by the
+`status=open` filter and found 46 records
+that passed the unchanged strict canary lifecycle screen before orderbook
+eligibility. This proved `COVERAGE_COMPLETE_SEMANTICS_BUG`; the old zero was a
+false complete-universe conclusion.
+
+The audit also compared lifecycle fields against current official
+documentation. `close_time` is the trading stop and may move earlier when
+`can_close_early` is true. `expected_expiration_time` is the forecast time when
+the outcome should be known. The April 16, 2026 changelog defines
+`occurrence_datetime` as the recorded time when the underlying event occurred,
+not a future deadline. The selector now preserves occurrence evidence without
+using it in the prospective lifecycle minimum. This semantic correction added
+zero candidates in the audit shadow policy; early-close strictness remains
+unchanged.
+
+The public correction raises the bounded scan ceiling to 100 pages, requires
+cursor exhaustion for complete coverage, deduplicates markets, evaluates all
+lifecycle candidates before reporting eligibility, and adds versioned policy,
+multi-label rejection, and hashed near-miss telemetry. The audit and code path
+remain Demo read-only. No credential, production, submit, cancel, wallet,
+account-order, private-fill, or real-money behavior was added.

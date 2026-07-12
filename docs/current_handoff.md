@@ -1,5 +1,35 @@
 # Current Handoff
 
+## Round 8J4 discovery integrity correction
+
+The prior canary availability monitor scanned exactly ten 1,000-market pages
+and reported `coverage_complete=true` with zero candidates even though the
+final cursor was not retained. A single audit-only Demo scan exhausted the
+cursor after 74 pages and 73,915 distinct records returned by the `status=open`
+scan. Under the same strict canary lifecycle policy, 46 records reached the orderbook eligibility
+stage. The primary audit classification is
+`COVERAGE_COMPLETE_SEMANTICS_BUG`: the earlier zero-candidate result was a
+bounded partial scan, not a complete-universe conclusion. The audit persisted
+only aggregate/redacted evidence outside Git; no raw payload was copied into
+the repository.
+
+Discovery now fails closed with
+`DEMO_MARKET_DISCOVERY_INCOMPLETE_PAGE_LIMIT` when its 100-page bound is reached
+with a cursor remaining. It deduplicates market records, evaluates every
+lifecycle candidate's orderbook before reporting the eligible count, and emits
+cursor-exhaustion fields, a versioned policy hash, primary and multi-label
+rejection totals, and up to 100 hashed near-miss summaries.
+
+The same audit found a separate authoritative field-contract error:
+Kalshi defines `occurrence_datetime` as the recorded time when the underlying
+event occurred. It remains preserved in evidence but no longer participates in
+the prospective lifecycle deadline. This correction did not create any
+additional candidate in the audit shadow policy. The strict canary rejection
+of every `can_close_early=true` market remains unchanged because the official
+schema provides no structured earliest-close guarantee. Sports/match, complete
+event metadata, expected-expiration, nonempty orderbook, Demo-only, and
+disabled-live boundaries also remain unchanged.
+
 ## D2B omitted empty-side contract correction
 
 Kalshi's official AsyncAPI schema marks `yes_dollars_fp` and `no_dollars_fp`
