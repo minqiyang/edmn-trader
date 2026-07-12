@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import tracemalloc
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -1377,6 +1378,48 @@ def test_validator_replay_accepts_new_subscription_generation() -> None:
     assert binding["generation"] == 2
     assert binding["sid"] == 44
     assert binding["state"] is SubscriptionBindingState.ACKNOWLEDGED
+
+
+def test_validator_replay_rejects_self_declared_generation_jump() -> None:
+    tracker = KalshiWsIntegrityTracker(
+        campaign_id="generation-jump",
+        requested_market_tickers=(MARKET,),
+    )
+    tracker.start_connection()
+    tracker.bind_subscription(command_id=1)
+    first = tracker.record(
+        {
+            "type": "subscribed",
+            "id": 1,
+            "sid": 41,
+            "msg": {"channel": "orderbook_delta"},
+        },
+        local_row_index=1,
+        received_at_utc=START,
+        received_monotonic_ns=1,
+    )
+    tracker.bind_subscription(command_id=2)
+    second = tracker.record(
+        {
+            "type": "subscribed",
+            "id": 2,
+            "sid": 44,
+            "msg": {"channel": "orderbook_delta"},
+        },
+        local_row_index=2,
+        received_at_utc=START,
+        received_monotonic_ns=2,
+    )
+    tampered = replace(
+        second,
+        subscription_generation=3,
+        subscription_binding_id=second.subscription_binding_id.replace("0002", "0003"),
+    )
+    bindings: dict[tuple[str, str], dict[str, object]] = {}
+    ws_runtime._replay_channel_binding(first, bindings)
+
+    with pytest.raises(ValueError, match="acknowledgment state contradicts"):
+        ws_runtime._replay_channel_binding(tampered, bindings)
 
 
 def test_running_monitor_blocks_tampered_safety_scalars(tmp_path: Path) -> None:

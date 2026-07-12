@@ -2277,18 +2277,21 @@ def _replay_channel_binding(
                 "sid": envelope.sid,
                 "state": SubscriptionBindingState.ACKNOWLEDGED,
                 "generation": event.subscription_generation,
+                "request_id": envelope.request_id,
             }
             expected = SubscriptionBindingState.ACKNOWLEDGED
             expected_observation = SubscriptionBindingObservation.ACKNOWLEDGED
         elif (
             isinstance(event.subscription_generation, int)
             and isinstance(binding["generation"], int)
-            and event.subscription_generation > binding["generation"]
+            and event.subscription_generation == binding["generation"] + 1
+            and envelope.request_id != binding["request_id"]
         ):
             binding.update(
                 sid=envelope.sid,
                 state=SubscriptionBindingState.ACKNOWLEDGED,
                 generation=event.subscription_generation,
+                request_id=envelope.request_id,
             )
             expected = SubscriptionBindingState.ACKNOWLEDGED
             expected_observation = SubscriptionBindingObservation.ACKNOWLEDGED
