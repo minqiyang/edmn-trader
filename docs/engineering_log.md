@@ -70,6 +70,12 @@ binding rather than a merely requested one. Trade data is also checked against
 the trade binding SID; stale/foreign trade rows are D2A-excluded and quarantined
 from D2C without touching D2B.
 
+The final correction round rejects native type/channel contradictions before
+downstream mutation: orderbook data must resolve to `orderbook_delta`, and
+public trades must resolve to `trade`. For supported plural no-SID ACKs, the
+first post-ACK data SID now binds that channel; later SID changes are excluded,
+so the compatibility path cannot admit multiple trade identities.
+
 D2A-D2D originally merged as independently verified software contracts, while
 the operational `kalshi-ws-smoke` entrypoint still wrote the historical
 campaign schema. D2E fixes that assembly gap rather than weakening the Real5M

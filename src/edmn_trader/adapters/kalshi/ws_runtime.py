@@ -2183,6 +2183,15 @@ def _validate_channel_binding(event: KalshiWsRawEvent) -> None:
         raise ValueError("D2A event lacks channel-scoped subscription identity")
     if event.subscription_binding_state is SubscriptionBindingState.REQUEST_MISMATCH:
         raise ValueError("D2A subscription acknowledgment request ID mismatch")
+    expected_channel = (
+        "orderbook_delta"
+        if event.native_type in {"orderbook_snapshot", "orderbook_delta"}
+        else "trade"
+        if event.native_type == "trade"
+        else None
+    )
+    if expected_channel is not None and event.channel != expected_channel:
+        raise ValueError("D2A native type contradicts its channel binding")
     binding_required = (
         event.native_type in {"orderbook_snapshot", "orderbook_delta", "trade"}
         or event.channel in REQUIRED_PUBLIC_CHANNELS

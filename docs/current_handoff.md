@@ -22,6 +22,9 @@ evidence only.
 The clean PR-head review additionally closes nested-SID ambiguity and requires
 new public data rows to carry acknowledged bindings. A trade row with a stale
 or foreign trade SID is quarantined from D2C and still cannot affect D2B.
+Native orderbook/trade message types must also match their corresponding
+channel. A plural no-SID ACK binds each channel's first observed SID and rejects
+later changes.
 
 This fix is fixture-only until a separately authorized post-fix Real5M. It does
 not weaken thresholds, use credentials or market network, or add any order

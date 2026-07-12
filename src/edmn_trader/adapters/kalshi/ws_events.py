@@ -63,6 +63,7 @@ class ExclusionReason(StrEnum):
     SEQUENCE_OUT_OF_ORDER = "SEQUENCE_OUT_OF_ORDER"
     SEQUENCE_GAP = "SEQUENCE_GAP"
     SUBSCRIPTION_IDENTITY_MISMATCH = "SUBSCRIPTION_IDENTITY_MISMATCH"
+    CHANNEL_TYPE_MISMATCH = "CHANNEL_TYPE_MISMATCH"
 
 
 class ResyncState(StrEnum):
@@ -512,7 +513,11 @@ class KalshiWsIntegrityTracker:
                 if native_command_id == binding.command_id
                 else SubscriptionBindingState.REQUEST_MISMATCH
             )
-        elif is_orderbook and binding is not None and binding.sid is None:
+        elif (
+            native_type in {"orderbook_snapshot", "orderbook_delta", "trade"}
+            and binding is not None
+            and binding.sid is None
+        ):
             binding.sid = native_sid
         native_seq = _native_identifier(payload, "seq")
         if (
@@ -528,6 +533,16 @@ class KalshiWsIntegrityTracker:
         admission_status = AdmissionStatus.NOT_APPLICABLE
         exclusion_reason = _sequence_exclusion_reason(sequence_state)
         integrity_failure = exclusion_reason is not None
+        expected_channel = (
+            "orderbook_delta"
+            if is_orderbook
+            else "trade"
+            if native_type == "trade"
+            else None
+        )
+        if expected_channel is not None and channel != expected_channel:
+            exclusion_reason = ExclusionReason.CHANNEL_TYPE_MISMATCH
+            integrity_failure = True
         if (
             native_type in {"orderbook_snapshot", "orderbook_delta", "trade"}
             and binding is not None
@@ -599,7 +614,11 @@ class KalshiWsIntegrityTracker:
         )
         if (
             integrity_failure
-            and exclusion_reason is not ExclusionReason.SUBSCRIPTION_IDENTITY_MISMATCH
+            and exclusion_reason
+            not in {
+                ExclusionReason.SUBSCRIPTION_IDENTITY_MISMATCH,
+                ExclusionReason.CHANNEL_TYPE_MISMATCH,
+            }
             and is_orderbook
         ):
             self._start_segment(SegmentBoundaryReason.INTEGRITY_FAILURE)

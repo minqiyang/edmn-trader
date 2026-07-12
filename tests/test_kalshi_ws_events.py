@@ -167,6 +167,38 @@ def test_channel_scoped_acknowledgements_keep_independent_native_sids() -> None:
     assert snapshot.admission_status is AdmissionStatus.ADMITTED
 
 
+@pytest.mark.parametrize(
+    ("native_type", "channel"),
+    [("orderbook_snapshot", "trade"), ("trade", "orderbook_delta")],
+)
+def test_native_type_cannot_use_another_channel_binding(
+    native_type: str,
+    channel: str,
+) -> None:
+    tracker = KalshiWsIntegrityTracker(
+        campaign_id="campaign-1",
+        requested_market_tickers=("DEMO-MARKET",),
+    )
+    tracker.start_connection()
+    tracker.bind_subscription(
+        command_id=1,
+        channels=("orderbook_delta", "trade"),
+    )
+    event = tracker.record(
+        {
+            "type": native_type,
+            "sid": 7,
+            "msg": {"channel": channel, "market_ticker": "DEMO-MARKET"},
+        },
+        local_row_index=1,
+        received_at_utc=RECEIVED_AT,
+        received_monotonic_ns=1,
+    )
+
+    assert event.admission_status is AdmissionStatus.EXCLUDED
+    assert event.exclusion_reason is ExclusionReason.CHANNEL_TYPE_MISMATCH
+
+
 def test_acknowledgement_with_unknown_request_id_does_not_bind_sid() -> None:
     tracker = KalshiWsIntegrityTracker(
         campaign_id="campaign-1",

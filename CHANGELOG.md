@@ -16,8 +16,10 @@ numbers while the repository is still in early research scaffolding.
   active generation, and ambiguous plural-channel ACKs with one SID do not
   satisfy acknowledgment, including nested SIDs. New public data rows require
   acknowledged bindings, and wrong-SID trades are quarantined from D2C without
-  affecting D2B. This is a fixture-only correction with no threshold,
-  credential, network, production, or order-write change.
+  affecting D2B. Native type/channel contradictions are excluded, and the first
+  SID after a supported no-SID ACK binds that channel. This is a fixture-only
+  correction with no threshold, credential, network, production, or
+  order-write change.
 - Reworked Demo candidate discovery to fetch market pages before event
   hydration, deduplicate and batch core event requests, cache event records,
   bound retryable 429/5xx/transport failures, distinguish incomplete coverage,

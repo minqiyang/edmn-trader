@@ -188,6 +188,57 @@ def test_trade_with_wrong_channel_sid_is_quarantined() -> None:
     assert stream.status is PublicTradeStreamStatus.QUARANTINED_INPUT
 
 
+def test_first_trade_sid_after_sidless_ack_is_bound_and_changes_are_quarantined() -> None:
+    tracker = KalshiWsIntegrityTracker(
+        campaign_id="campaign-1",
+        requested_market_tickers=(MARKET,),
+    )
+    tracker.start_connection()
+    tracker.bind_subscription(command_id=1, channels=("orderbook_delta", "trade"))
+    tracker.record(
+        {
+            "type": "subscribed",
+            "id": 1,
+            "msg": {"channels": ["orderbook_delta", "trade"]},
+        },
+        local_row_index=1,
+        received_at_utc=NOW,
+        received_monotonic_ns=1,
+    )
+    first = tracker.record(
+        {
+            "type": "trade",
+            "sid": 22,
+            "seq": 1,
+            "msg": {"trade_id": "first", "market_ticker": MARKET},
+        },
+        local_row_index=2,
+        received_at_utc=NOW,
+        received_monotonic_ns=2,
+    )
+    changed = tracker.record(
+        {
+            "type": "trade",
+            "sid": 99,
+            "seq": 2,
+            "msg": {"trade_id": "changed", "market_ticker": MARKET},
+        },
+        local_row_index=3,
+        received_at_utc=NOW,
+        received_monotonic_ns=3,
+    )
+
+    stream = build_public_trade_stream(
+        [first, changed],
+        selected_market_tickers=(MARKET,),
+    )
+
+    assert first.exclusion_reason is None
+    assert changed.exclusion_reason is ExclusionReason.SUBSCRIPTION_IDENTITY_MISMATCH
+    assert stream.trade_count == 1
+    assert stream.quarantined_count == 1
+
+
 def test_accepted_trade_does_not_hide_quarantined_input() -> None:
     malformed = _event(
         _tracker(),
