@@ -125,20 +125,22 @@ def test_market_selection_rejects_unsafe_early_close_without_expected_expiration
     assert result["selection_gate_rejection_reason"] == "CAN_CLOSE_EARLY_UNSAFE_FOR_DURATION"
 
 
-def test_market_selection_rejects_sports_occurrence_inside_long_horizon() -> None:
+def test_market_selection_treats_occurrence_as_observed_metadata_not_deadline() -> None:
     result = evaluate_market_selection(
         _market_metadata(
             close_time="2026-07-20T00:00:00Z",
             expected_expiration_time="2026-07-20T00:00:00Z",
-            occurrence_datetime="2026-07-08T00:00:00Z",
-            event_category="Sports",
+            occurrence_datetime="2026-07-02T00:00:00Z",
+            event_category="Finance",
             event_metadata_fetched=True,
         ),
         selected_at_utc=NOW,
         duration_seconds=SEVEN_DAY_SECONDS,
     )
 
-    assert result["selection_gate_rejection_reason"] == "EVENT_OCCURRENCE_TOO_EARLY"
+    assert result["selection_gate_result"] == "pass"
+    assert result["selection_gate_rejection_reason"] is None
+    assert result["lifecycle_deadline"] == "2026-07-20T00:00:00+00:00"
 
 
 def test_market_selection_accepts_all_conservative_deadlines_beyond_required_end() -> None:
@@ -157,7 +159,7 @@ def test_market_selection_accepts_all_conservative_deadlines_beyond_required_end
     )
 
     assert result["selection_gate_result"] == "pass"
-    assert result["lifecycle_deadline"] == "2026-07-18T00:00:00+00:00"
+    assert result["lifecycle_deadline"] == "2026-07-19T00:00:00+00:00"
 
 
 def test_short_smoke_accepts_sufficiently_long_short_lived_market() -> None:
@@ -390,6 +392,154 @@ def test_market_discovery_paginates_and_selects_active_market() -> None:
     assert [request.url.params.get("cursor") for request in market_requests] == [None, "page-2"]
     assert all(request.method == "GET" for request in requests)
     assert all(request.url.host == "external-api.demo.kalshi.co" for request in requests)
+
+
+def test_market_discovery_does_not_call_page_cap_complete_with_cursor_remaining() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json={"markets": [_market_metadata()], "cursor": "more-markets"},
+        )
+
+    result = discover_kalshi_demo_ws_market(
+        duration_seconds=CANARY_SECONDS,
+        safety_buffer_seconds=CANARY_SELECTION_SAFETY_BUFFER_SECONDS,
+        selected_at_utc=NOW,
+        client=_market_discovery_client(handler),
+        max_pages=2,
+    )
+
+    assert result["blocker_code"] == "DEMO_MARKET_DISCOVERY_INCOMPLETE_PAGE_LIMIT"
+    assert result["coverage_complete"] is False
+    assert result["cursor_remaining"] is True
+    assert result["pages_fetched"] == 2
+    assert result["diagnostics"]["final_cursor_empty"] is False
+    assert result["diagnostics"]["max_pages_reached"] is True
+    assert all(request.url.path.endswith("/markets") for request in requests)
+
+
+def test_market_discovery_emits_complete_multilabel_profile_evidence() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/markets"):
+            return httpx.Response(
+                200,
+                json={
+                    "markets": [
+                        _market_metadata(
+                            ticker="RISKY-MARKET",
+                            event_ticker="RISKY-EVENT",
+                            can_close_early=True,
+                            expected_expiration_time="2026-07-03T19:00:00Z",
+                        ),
+                        _market_metadata(
+                            ticker="SAFE-MARKET",
+                            event_ticker="SAFE-EVENT",
+                            expected_expiration_time="2026-07-20T00:00:00Z",
+                        ),
+                    ],
+                    "cursor": "",
+                },
+            )
+        if request.url.path.endswith("/events"):
+            return httpx.Response(
+                200,
+                json={
+                    "events": [
+                        {
+                            "event_ticker": "RISKY-EVENT",
+                            "category": "Sports",
+                            "title": "Season outcome",
+                        },
+                        {
+                            "event_ticker": "SAFE-EVENT",
+                            "category": "Finance",
+                            "title": "Long-horizon finance event",
+                        },
+                    ],
+                    "cursor": "",
+                },
+            )
+        return httpx.Response(
+            200,
+            json={
+                "orderbook_fp": {
+                    "yes_dollars": [["0.4000", "2.00"]],
+                    "no_dollars": [],
+                }
+            },
+        )
+
+    result = discover_kalshi_demo_ws_market(
+        duration_seconds=CANARY_SECONDS,
+        safety_buffer_seconds=CANARY_SELECTION_SAFETY_BUFFER_SECONDS,
+        selected_at_utc=NOW,
+        client=_market_discovery_client(handler),
+    )
+
+    assert result["blocker_code"] is None
+    assert result["coverage_complete"] is True
+    assert result["eligible_count"] == 1
+    assert result["market_metadata"]["ticker"] == "SAFE-MARKET"
+    assert result["diagnostics"]["distinct_market_count"] == 2
+    assert result["diagnostics"]["duplicate_market_count"] == 0
+    assert result["diagnostics"]["all_markets_multilabel_evaluated"] is True
+    assert result["multi_label_rejection_counts"] == {
+        "CAN_CLOSE_EARLY_UNSAFE_FOR_CANARY": 1,
+        "CANARY_LIFECYCLE_DEADLINE_TOO_SHORT": 1,
+        "EXPECTED_EXPIRATION_TOO_SHORT": 1,
+        "SPORTS_UNSUITABLE_FOR_CANARY": 1,
+    }
+    assert result["selection_profile_version"] == "edmn.kalshi.selection_profile.v2"
+    assert len(result["selection_profile_hash"]) == 64
+    assert result["near_misses"]
+    assert "RISKY-MARKET" not in json.dumps(result["near_misses"])
+
+
+def test_market_discovery_deduplicates_markets_before_counting_eligibility() -> None:
+    market = _market_metadata(expected_expiration_time="2026-07-20T00:00:00Z")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/markets"):
+            return httpx.Response(
+                200,
+                json={"markets": [market, dict(market)], "cursor": ""},
+            )
+        if request.url.path.endswith("/events"):
+            return httpx.Response(
+                200,
+                json={
+                    "events": [{
+                        "event_ticker": "DEMO-EVENT",
+                        "category": "Finance",
+                        "title": "Long-horizon finance event",
+                    }],
+                    "cursor": "",
+                },
+            )
+        return httpx.Response(
+            200,
+            json={
+                "orderbook_fp": {
+                    "yes_dollars": [["0.4000", "2.00"]],
+                    "no_dollars": [],
+                }
+            },
+        )
+
+    result = discover_kalshi_demo_ws_market(
+        duration_seconds=CANARY_SECONDS,
+        safety_buffer_seconds=CANARY_SELECTION_SAFETY_BUFFER_SECONDS,
+        selected_at_utc=NOW,
+        client=_market_discovery_client(handler),
+    )
+
+    assert result["eligible_count"] == 1
+    assert result["markets_seen"] == 1
+    assert result["diagnostics"]["distinct_market_count"] == 1
+    assert result["diagnostics"]["duplicate_market_count"] == 1
 
 
 def test_market_discovery_deduplicates_event_hydration_for_shared_events() -> None:
@@ -1223,7 +1373,7 @@ def test_manifest_preserves_lifecycle_v2_fields(tmp_path: Path) -> None:
     assert manifest["can_close_early"] is True
     assert manifest["expected_expiration_time"] == "2026-07-19T00:00:00+00:00"
     assert manifest["occurrence_datetime"] == "2026-07-18T00:00:00+00:00"
-    assert manifest["lifecycle_deadline"] == "2026-07-18T00:00:00+00:00"
+    assert manifest["lifecycle_deadline"] == "2026-07-19T00:00:00+00:00"
     assert manifest["selection_gate_rejection_reason"] is None
 
 

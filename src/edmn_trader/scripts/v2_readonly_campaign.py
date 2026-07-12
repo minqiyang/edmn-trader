@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import random
 import sys
@@ -51,9 +52,11 @@ DEFAULT_SELECTION_SAFETY_BUFFER_SECONDS = 86_400
 SMOKE_SELECTION_SAFETY_BUFFER_SECONDS = 900
 CANARY_SELECTION_SAFETY_BUFFER_SECONDS = 3_600
 MARKET_DISCOVERY_PAGE_LIMIT = 1_000
-MAX_MARKET_DISCOVERY_PAGES = 10
+MAX_MARKET_DISCOVERY_PAGES = 100
 EVENT_DISCOVERY_BATCH_SIZE = 50
 DISCOVERY_MAX_ATTEMPTS = 3
+DISCOVERY_NEAR_MISS_LIMIT = 100
+SELECTION_PROFILE_VERSION = "edmn.kalshi.selection_profile.v2"
 OPEN_MARKET_STATUSES = {"open", "trading"}
 MARKET_STATUS_REJECTION_REASONS = {
     "initialized": "MARKET_STATUS_UNOPENED",
@@ -83,8 +86,6 @@ CONSERVATIVE_LIFECYCLE_TIME_FIELDS = (
     "close_time",
     "expected_expiration_time",
     "expected_expiration",
-    "occurrence_datetime",
-    "occurrence_time",
     "early_close_deadline",
     "early_close_time",
     "settlement_time",
@@ -129,6 +130,34 @@ def selection_safety_buffer_seconds(profile: SelectionProfile) -> int:
     if profile is SelectionProfile.SEVEN_DAY:
         return DEFAULT_SELECTION_SAFETY_BUFFER_SECONDS
     return SMOKE_SELECTION_SAFETY_BUFFER_SECONDS
+
+
+def selection_profile_hash(
+    profile: SelectionProfile,
+    *,
+    duration_seconds: int,
+    safety_buffer_seconds: int,
+) -> str:
+    policy = {
+        "version": SELECTION_PROFILE_VERSION,
+        "profile": profile.value,
+        "duration_seconds": duration_seconds,
+        "safety_buffer_seconds": safety_buffer_seconds,
+        "conservative_lifecycle_time_fields": CONSERVATIVE_LIFECYCLE_TIME_FIELDS,
+        "observational_only_time_fields": OCCURRENCE_FIELDS,
+        "complete_event_metadata_required": profile is not SelectionProfile.SMOKE,
+        "early_close_rule": (
+            "reject_any"
+            if profile is SelectionProfile.CANARY
+            else "require_expected_or_explicit_deadline"
+        ),
+        "expected_expiration_must_exceed_required_end": True,
+        "earliest_deadline_must_exceed_required_end": True,
+        "reject_sports_or_match": profile is not SelectionProfile.SMOKE,
+        "require_non_empty_orderbook": True,
+    }
+    encoded = json.dumps(policy, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _blocked_ws_selection_record(
@@ -184,74 +213,18 @@ def evaluate_market_selection(
             selection_profile=profile,
         )
 
-    status = str(market_metadata.get("status") or "").strip().lower()
-    reason = MARKET_STATUS_REJECTION_REASONS.get(status)
-    if not status:
-        reason = "MARKET_STATUS_UNKNOWN"
-    elif status not in OPEN_MARKET_STATUSES and reason is None:
-        reason = "MARKET_STATUS_UNKNOWN"
-
     campaign_required_end = selected_at_utc + timedelta(
         seconds=duration_seconds + effective_safety_buffer
     )
-    expected_expiration = _first_metadata_time(market_metadata, *EXPECTED_EXPIRATION_FIELDS)
-    occurrence_time = _first_metadata_time(market_metadata, *OCCURRENCE_FIELDS)
-    early_close_deadline = _first_metadata_time(market_metadata, *EARLY_CLOSE_DEADLINE_FIELDS)
-    lifecycle_deadline = _earliest_metadata_time(
-        market_metadata, *CONSERVATIVE_LIFECYCLE_TIME_FIELDS
+    reasons = _market_selection_rejection_reasons(
+        market_metadata,
+        campaign_required_end=campaign_required_end,
+        profile=profile,
+        require_non_empty_orderbook=require_non_empty_orderbook,
+        require_event_metadata=require_event_metadata,
+        allow_sports_long_horizon=allow_sports_long_horizon,
     )
-    long_horizon = profile is SelectionProfile.SEVEN_DAY
-    event_metadata_required = require_event_metadata or profile is not SelectionProfile.SMOKE
-
-    if reason is None and event_metadata_required and not _event_category(market_metadata):
-        reason = "EVENT_CATEGORY_MISSING"
-    if reason is None and event_metadata_required and not _event_metadata_fetched(market_metadata):
-        reason = (
-            "EVENT_METADATA_INCOMPLETE"
-            if profile is SelectionProfile.CANARY
-            else "EVENT_METADATA_MISSING"
-        )
-    if reason is None and profile is SelectionProfile.CANARY and _as_bool(
-        market_metadata.get("can_close_early")
-    ):
-        reason = "CAN_CLOSE_EARLY_UNSAFE_FOR_CANARY"
-    if reason is None and _as_bool(market_metadata.get("can_close_early")):
-        if expected_expiration is None and early_close_deadline is None:
-            reason = "CAN_CLOSE_EARLY_UNSAFE_FOR_DURATION"
-    if reason is None and expected_expiration is not None:
-        if expected_expiration <= campaign_required_end:
-            reason = "EXPECTED_EXPIRATION_TOO_SHORT"
-    if reason is None and profile is not SelectionProfile.SMOKE and occurrence_time is not None:
-        if occurrence_time <= campaign_required_end:
-            reason = "EVENT_OCCURRENCE_TOO_EARLY"
-    if reason is None and lifecycle_deadline is None:
-        reason = "MISSING_CLOSE_TIME"
-    if reason is None and lifecycle_deadline <= campaign_required_end:
-        if profile is SelectionProfile.CANARY:
-            reason = "CANARY_LIFECYCLE_DEADLINE_TOO_SHORT"
-        elif (
-            _parse_time(market_metadata.get("close_time")) == lifecycle_deadline
-            and expected_expiration is None
-            and occurrence_time is None
-            and early_close_deadline is None
-        ):
-            reason = "TIME_TO_CLOSE_TOO_SHORT"
-        else:
-            reason = "CONSERVATIVE_LIFECYCLE_DEADLINE_TOO_SHORT"
-    if reason is None and profile is SelectionProfile.CANARY and _is_sports_market(
-        market_metadata
-    ):
-        reason = "SPORTS_UNSUITABLE_FOR_CANARY"
-    if reason is None and profile is SelectionProfile.CANARY and _is_match_event(
-        market_metadata
-    ):
-        reason = "MATCH_EVENT_UNSUITABLE_FOR_CANARY"
-    if reason is None and long_horizon and not allow_sports_long_horizon:
-        if _is_sports_market(market_metadata) or _is_match_event(market_metadata):
-            reason = "SPORTS_MATCH_UNSUITABLE_FOR_LONG_CAMPAIGN"
-
-    if reason is None and require_non_empty_orderbook and _is_empty_orderbook(market_metadata):
-        reason = "EMPTY_ORDERBOOK"
+    reason = reasons[0] if reasons else None
 
     return _market_lifecycle_record(
         market_metadata,
@@ -263,6 +236,73 @@ def evaluate_market_selection(
         reason=reason,
         selection_profile=profile,
     )
+
+
+def _market_selection_rejection_reasons(
+    market_metadata: Mapping[str, object],
+    *,
+    campaign_required_end: datetime,
+    profile: SelectionProfile,
+    require_non_empty_orderbook: bool,
+    require_event_metadata: bool,
+    allow_sports_long_horizon: bool,
+) -> tuple[str, ...]:
+    reasons: list[str] = []
+    status = str(market_metadata.get("status") or "").strip().lower()
+    status_reason = MARKET_STATUS_REJECTION_REASONS.get(status)
+    if not status:
+        reasons.append("MARKET_STATUS_UNKNOWN")
+    elif status not in OPEN_MARKET_STATUSES:
+        reasons.append(status_reason or "MARKET_STATUS_UNKNOWN")
+
+    event_metadata_required = require_event_metadata or profile is not SelectionProfile.SMOKE
+    if event_metadata_required and not _event_category(market_metadata):
+        reasons.append("EVENT_CATEGORY_MISSING")
+    if event_metadata_required and not _event_metadata_fetched(market_metadata):
+        reasons.append(
+            "EVENT_METADATA_INCOMPLETE"
+            if profile is SelectionProfile.CANARY
+            else "EVENT_METADATA_MISSING"
+        )
+
+    expected_expiration = _first_metadata_time(market_metadata, *EXPECTED_EXPIRATION_FIELDS)
+    early_close_deadline = _first_metadata_time(market_metadata, *EARLY_CLOSE_DEADLINE_FIELDS)
+    lifecycle_deadline = _earliest_metadata_time(
+        market_metadata, *CONSERVATIVE_LIFECYCLE_TIME_FIELDS
+    )
+    can_close_early = _as_bool(market_metadata.get("can_close_early"))
+    if profile is SelectionProfile.CANARY and can_close_early:
+        reasons.append("CAN_CLOSE_EARLY_UNSAFE_FOR_CANARY")
+    if can_close_early and expected_expiration is None and early_close_deadline is None:
+        reasons.append("CAN_CLOSE_EARLY_UNSAFE_FOR_DURATION")
+    if expected_expiration is not None and expected_expiration <= campaign_required_end:
+        reasons.append("EXPECTED_EXPIRATION_TOO_SHORT")
+    if lifecycle_deadline is None:
+        reasons.append("MISSING_CLOSE_TIME")
+    elif lifecycle_deadline <= campaign_required_end:
+        if profile is SelectionProfile.CANARY:
+            reasons.append("CANARY_LIFECYCLE_DEADLINE_TOO_SHORT")
+        elif (
+            _parse_time(market_metadata.get("close_time")) == lifecycle_deadline
+            and expected_expiration is None
+            and early_close_deadline is None
+        ):
+            reasons.append("TIME_TO_CLOSE_TOO_SHORT")
+        else:
+            reasons.append("CONSERVATIVE_LIFECYCLE_DEADLINE_TOO_SHORT")
+
+    sports = _is_sports_market(market_metadata)
+    match = _is_match_event(market_metadata)
+    if profile is SelectionProfile.CANARY and sports:
+        reasons.append("SPORTS_UNSUITABLE_FOR_CANARY")
+    if profile is SelectionProfile.CANARY and match:
+        reasons.append("MATCH_EVENT_UNSUITABLE_FOR_CANARY")
+    if profile is SelectionProfile.SEVEN_DAY and not allow_sports_long_horizon:
+        if sports or match:
+            reasons.append("SPORTS_MATCH_UNSUITABLE_FOR_LONG_CAMPAIGN")
+    if require_non_empty_orderbook and _is_empty_orderbook(market_metadata):
+        reasons.append("EMPTY_ORDERBOOK")
+    return tuple(dict.fromkeys(reasons))
 
 
 def plan_campaign(
@@ -1134,12 +1174,13 @@ def discover_kalshi_demo_ws_market(
 ) -> dict[str, object]:
     """Find one lifecycle-eligible Demo market with bounded complete discovery."""
 
+    if max_pages < 1:
+        raise ValueError("max_pages must be at least 1")
     active_client = client or KalshiDemoMarketDataClient()
     owns_client = client is None
     cursor: str | None = None
     pages_attempted = 0
     pages_fetched = 0
-    rejection_counts: Counter[str] = Counter()
     diagnostics: dict[str, Any] = {
         "coverage_complete": False,
         "event_batch_requests": 0,
@@ -1154,13 +1195,24 @@ def discover_kalshi_demo_ws_market(
         "parse_schema_failure_count": 0,
         "candidate_local_failure_count": 0,
     }
-    normalized_markets: list[dict[str, object]] = []
+    raw_normalized_markets: list[dict[str, object]] = []
     profile = (
         SelectionProfile(selection_profile)
         if selection_profile is not None
         else selection_profile_for_duration(duration_seconds)
     )
     require_event_metadata = profile is not SelectionProfile.SMOKE
+    diagnostics.update(
+        {
+            "selection_profile": profile.value,
+            "selection_profile_version": SELECTION_PROFILE_VERSION,
+            "selection_profile_hash": selection_profile_hash(
+                profile,
+                duration_seconds=duration_seconds,
+                safety_buffer_seconds=safety_buffer_seconds,
+            ),
+        }
+    )
     try:
         for _ in range(max_pages):
             pages_attempted += 1
@@ -1176,14 +1228,14 @@ def discover_kalshi_demo_ws_market(
                 return _market_discovery_blocker(
                     "DEMO_MARKET_DISCOVERY_INCOMPLETE_HTTP_ERROR",
                     pages_fetched=pages_fetched,
-                    markets_seen=len(normalized_markets),
-                    rejection_counts=rejection_counts,
+                    markets_seen=len(raw_normalized_markets),
+                    rejection_counts={},
                     cursor_remaining=bool(cursor),
                     diagnostics={**diagnostics, "pages_attempted": pages_attempted},
                 )
             pages_fetched += 1
             raw_markets = payload.get("markets", [])
-            normalized_markets.extend(
+            raw_normalized_markets.extend(
                 normalize_kalshi_market_metadata(item)
                 for item in raw_markets
                 if isinstance(item, Mapping)
@@ -1194,30 +1246,41 @@ def discover_kalshi_demo_ws_market(
             if cursor is None:
                 break
 
-        candidates: list[dict[str, object]] = []
-        for market_metadata in normalized_markets:
-            basic = evaluate_market_selection(
-                market_metadata,
-                selected_at_utc=selected_at_utc,
-                duration_seconds=duration_seconds,
-                safety_buffer_seconds=safety_buffer_seconds,
-                selection_reason="kalshi_demo_paginated_market_discovery",
-                require_non_empty_orderbook=False,
-                selection_profile=SelectionProfile.SMOKE,
+        diagnostics.update(
+            {
+                "pages_attempted": pages_attempted,
+                "pages_completed": pages_fetched,
+                "final_cursor_empty": cursor is None,
+                "max_pages_reached": cursor is not None and pages_fetched == max_pages,
+                "raw_market_count": len(raw_normalized_markets),
+            }
+        )
+        normalized_markets, duplicate_market_count = _deduplicate_discovery_markets(
+            raw_normalized_markets
+        )
+        diagnostics.update(
+            {
+                "distinct_market_count": len(normalized_markets),
+                "duplicate_market_count": duplicate_market_count,
+            }
+        )
+        if cursor is not None:
+            return _market_discovery_blocker(
+                "DEMO_MARKET_DISCOVERY_INCOMPLETE_PAGE_LIMIT",
+                pages_fetched=pages_fetched,
+                markets_seen=len(normalized_markets),
+                rejection_counts={},
+                cursor_remaining=True,
+                diagnostics=diagnostics,
             )
-            rejection = basic.get("selection_gate_rejection_reason")
-            if rejection:
-                rejection_counts[str(rejection)] += 1
-            else:
-                candidates.append(market_metadata)
 
         event_cache: dict[str, Mapping[str, object]] = {}
         if require_event_metadata:
             event_tickers = sorted(
                 {
-                    str(candidate.get("event_ticker"))
-                    for candidate in candidates
-                    if candidate.get("event_ticker")
+                    str(market.get("event_ticker"))
+                    for market in normalized_markets
+                    if market.get("event_ticker")
                 }
             )
             diagnostics["unique_event_tickers"] = len(event_tickers)
@@ -1233,7 +1296,7 @@ def discover_kalshi_demo_ws_market(
                         "DEMO_MARKET_DISCOVERY_INCOMPLETE_HTTP_ERROR",
                         pages_fetched=pages_fetched,
                         markets_seen=len(normalized_markets),
-                        rejection_counts=rejection_counts,
+                        rejection_counts={},
                         cursor_remaining=bool(cursor),
                         diagnostics={**diagnostics, "pages_attempted": pages_attempted},
                     )
@@ -1255,41 +1318,56 @@ def discover_kalshi_demo_ws_market(
                         "DEMO_MARKET_DISCOVERY_INCOMPLETE_HTTP_ERROR",
                         pages_fetched=pages_fetched,
                         markets_seen=len(normalized_markets),
-                        rejection_counts=rejection_counts,
+                        rejection_counts={},
                         cursor_remaining=bool(cursor),
                         diagnostics={**diagnostics, "pages_attempted": pages_attempted},
                     )
                 event_cache[ticker] = event
 
-        lifecycle_candidates: list[tuple[dict[str, object], dict[str, object]]] = []
-        for market_metadata in candidates:
+        audit_rows: list[tuple[dict[str, object], list[str]]] = []
+        lifecycle_candidates: list[
+            tuple[dict[str, object], dict[str, object], list[str]]
+        ] = []
+        event_metadata_complete_count = 0
+        for market_metadata in normalized_markets:
             candidate_metadata = market_metadata
+            reasons: list[str] = []
             if require_event_metadata:
                 event_ticker = str(market_metadata.get("event_ticker") or "")
                 event = event_cache.get(event_ticker)
                 if event is None:
-                    rejection_counts["EVENT_METADATA_FETCH_FAILED"] += 1
-                    continue
-                try:
-                    candidate_metadata = _merge_event_metadata(market_metadata, event)
-                except KalshiResponseError:
-                    rejection_counts["EVENT_METADATA_INCOMPLETE"] += 1
-                    continue
-            selection = evaluate_market_selection(
+                    reasons.append("EVENT_METADATA_FETCH_FAILED")
+                else:
+                    try:
+                        candidate_metadata = _merge_event_metadata(market_metadata, event)
+                        event_metadata_complete_count += 1
+                    except KalshiResponseError:
+                        reasons.append("EVENT_METADATA_INCOMPLETE")
+            policy_reasons = _market_selection_rejection_reasons(
                 candidate_metadata,
-                selected_at_utc=selected_at_utc,
-                duration_seconds=duration_seconds,
-                safety_buffer_seconds=safety_buffer_seconds,
-                selection_reason="kalshi_demo_paginated_market_discovery",
+                campaign_required_end=selected_at_utc
+                + timedelta(seconds=duration_seconds + safety_buffer_seconds),
+                profile=profile,
                 require_non_empty_orderbook=False,
                 require_event_metadata=require_event_metadata,
-                selection_profile=profile,
+                allow_sports_long_horizon=False,
             )
-            rejection = selection.get("selection_gate_rejection_reason")
-            if rejection:
-                rejection_counts[str(rejection)] += 1
-            else:
-                lifecycle_candidates.append((candidate_metadata, selection))
+            reasons.extend(
+                reason for reason in policy_reasons if reason not in reasons
+            )
+            audit_rows.append((candidate_metadata, reasons))
+            if not reasons:
+                selection = evaluate_market_selection(
+                    candidate_metadata,
+                    selected_at_utc=selected_at_utc,
+                    duration_seconds=duration_seconds,
+                    safety_buffer_seconds=safety_buffer_seconds,
+                    selection_reason="kalshi_demo_paginated_market_discovery",
+                    require_non_empty_orderbook=False,
+                    require_event_metadata=require_event_metadata,
+                    selection_profile=profile,
+                )
+                lifecycle_candidates.append((candidate_metadata, selection, reasons))
 
         lifecycle_candidates.sort(
             key=lambda item: (
@@ -1304,34 +1382,46 @@ def discover_kalshi_demo_ws_market(
                     market.get("status") in OPEN_MARKET_STATUSES
                     for market in normalized_markets
                 ),
-                "metadata_complete_count": len(lifecycle_candidates),
+                "event_metadata_complete_count": event_metadata_complete_count,
+                "lifecycle_candidate_count": len(lifecycle_candidates),
                 "non_sports_count": sum(
-                    not _is_sports_market(candidate)
-                    for candidate, _selection in lifecycle_candidates
+                    _event_metadata_fetched(metadata) and not _is_sports_market(metadata)
+                    for metadata, _reasons in audit_rows
                 ),
             }
         )
-        for candidate_metadata, _selection in lifecycle_candidates:
+        eligible_candidates: list[tuple[dict[str, object], dict[str, object]]] = []
+        for candidate_metadata, _selection, reasons in lifecycle_candidates:
             ticker = candidate_metadata.get("ticker") or candidate_metadata.get("market_ticker")
             if not isinstance(ticker, str) or not ticker:
-                rejection_counts["MISSING_MARKET_METADATA"] += 1
+                reasons.append("MISSING_MARKET_METADATA")
                 continue
             diagnostics["orderbook_requests"] += 1
             orderbook, error = _discovery_request(
                 lambda ticker=ticker: active_client.get_market_orderbook(ticker), diagnostics
             )
             if error in {"EMPTY_ORDERBOOK", "HTTP_404", "RESPONSE_SCHEMA_ERROR"}:
-                rejection_counts[error] += 1
+                reasons.append(error)
                 diagnostics["candidate_local_failure_count"] += 1
                 continue
             if error or not isinstance(orderbook, Mapping):
+                audit = _discovery_audit_summary(
+                    audit_rows,
+                    selected_at_utc=selected_at_utc,
+                    duration_seconds=duration_seconds,
+                    safety_buffer_seconds=safety_buffer_seconds,
+                )
                 return _market_discovery_blocker(
                     "DEMO_MARKET_DISCOVERY_INCOMPLETE_HTTP_ERROR",
                     pages_fetched=pages_fetched,
                     markets_seen=len(normalized_markets),
-                    rejection_counts=rejection_counts,
+                    rejection_counts=audit["rejection_counts"],
                     cursor_remaining=bool(cursor),
                     diagnostics={**diagnostics, "pages_attempted": pages_attempted},
+                    multi_label_rejection_counts=audit[
+                        "multi_label_rejection_counts"
+                    ],
+                    near_misses=audit["near_misses"],
                 )
             book = orderbook["orderbook_fp"]
             level_count = len(book["yes_dollars"]) + len(book["no_dollars"])
@@ -1345,44 +1435,165 @@ def discover_kalshi_demo_ws_market(
                 require_event_metadata=require_event_metadata,
                 selection_profile=profile,
             )
-            diagnostics.update(
-                {
-                    "coverage_complete": True,
-                    "pages_attempted": pages_attempted,
-                    "unique_event_tickers": diagnostics.get("unique_event_tickers", 0),
-                    "eligible_count": 1,
-                }
+            final_reasons = _market_selection_rejection_reasons(
+                selected_metadata,
+                campaign_required_end=selected_at_utc
+                + timedelta(seconds=duration_seconds + safety_buffer_seconds),
+                profile=profile,
+                require_non_empty_orderbook=True,
+                require_event_metadata=require_event_metadata,
+                allow_sports_long_horizon=False,
             )
+            if final_reasons:
+                reasons.extend(reason for reason in final_reasons if reason not in reasons)
+                continue
+            eligible_candidates.append((selected_metadata, selected))
+
+        audit = _discovery_audit_summary(
+            audit_rows,
+            selected_at_utc=selected_at_utc,
+            duration_seconds=duration_seconds,
+            safety_buffer_seconds=safety_buffer_seconds,
+        )
+        diagnostics.update(
+            {
+                "coverage_complete": True,
+                "eligible_count": len(eligible_candidates),
+                "all_markets_multilabel_evaluated": len(audit_rows)
+                == len(normalized_markets),
+            }
+        )
+        if eligible_candidates:
+            selected_metadata, selected = eligible_candidates[0]
             return {
                 "market_metadata": selected_metadata,
                 "selection": selected,
                 "blocker_code": None,
                 "pages_fetched": pages_fetched,
                 "markets_seen": len(normalized_markets),
-                "rejection_counts": dict(sorted(rejection_counts.items())),
-                "cursor_remaining": bool(cursor),
+                "rejection_counts": audit["rejection_counts"],
+                "multi_label_rejection_counts": audit[
+                    "multi_label_rejection_counts"
+                ],
+                "near_misses": audit["near_misses"],
+                "cursor_remaining": False,
+                "coverage_complete": True,
+                "eligible_count": len(eligible_candidates),
+                "selection_profile_version": SELECTION_PROFILE_VERSION,
+                "selection_profile_hash": diagnostics["selection_profile_hash"],
                 "diagnostics": diagnostics,
             }
+
+        blocker_code = (
+            "DEMO_NO_OPEN_MARKETS" if not normalized_markets else "DEMO_NO_ELIGIBLE_MARKET"
+        )
+        return _market_discovery_blocker(
+            blocker_code,
+            pages_fetched=pages_fetched,
+            markets_seen=len(normalized_markets),
+            rejection_counts=audit["rejection_counts"],
+            cursor_remaining=False,
+            diagnostics=diagnostics,
+            multi_label_rejection_counts=audit["multi_label_rejection_counts"],
+            near_misses=audit["near_misses"],
+        )
     finally:
         if owns_client:
             active_client.close()
 
-    diagnostics.update(
-        {
-            "coverage_complete": True,
-            "pages_attempted": pages_attempted,
-            "eligible_count": 0,
-        }
+
+def _deduplicate_discovery_markets(
+    markets: list[dict[str, object]],
+) -> tuple[list[dict[str, object]], int]:
+    seen: set[str] = set()
+    deduplicated: list[dict[str, object]] = []
+    duplicate_count = 0
+    for market in markets:
+        ticker = str(market.get("ticker") or market.get("market_ticker") or "").strip()
+        if ticker and ticker in seen:
+            duplicate_count += 1
+            continue
+        if ticker:
+            seen.add(ticker)
+        deduplicated.append(market)
+    return deduplicated, duplicate_count
+
+
+def _discovery_audit_summary(
+    rows: list[tuple[dict[str, object], list[str]]],
+    *,
+    selected_at_utc: datetime,
+    duration_seconds: int,
+    safety_buffer_seconds: int,
+) -> dict[str, Any]:
+    rejection_counts: Counter[str] = Counter()
+    multi_label_rejection_counts: Counter[str] = Counter()
+    near_misses: list[dict[str, object]] = []
+    required_end = selected_at_utc + timedelta(
+        seconds=duration_seconds + safety_buffer_seconds
     )
-    blocker_code = "DEMO_NO_OPEN_MARKETS" if not normalized_markets else "DEMO_NO_ELIGIBLE_MARKET"
-    return _market_discovery_blocker(
-        blocker_code,
-        pages_fetched=pages_fetched,
-        markets_seen=len(normalized_markets),
-        rejection_counts=rejection_counts,
-        cursor_remaining=cursor is not None,
-        diagnostics=diagnostics,
+    for metadata, reasons in rows:
+        if reasons:
+            rejection_counts[reasons[0]] += 1
+            multi_label_rejection_counts.update(reasons)
+        deadline = _earliest_metadata_time(metadata, *CONSERVATIVE_LIFECYCLE_TIME_FIELDS)
+        deadline_source = next(
+            (
+                field
+                for field in CONSERVATIVE_LIFECYCLE_TIME_FIELDS
+                if _parse_time(metadata.get(field)) == deadline
+            ),
+            None,
+        )
+        margin = int((deadline - required_end).total_seconds()) if deadline else None
+        close_time = _parse_time(metadata.get("close_time"))
+        expected_expiration = _first_metadata_time(metadata, *EXPECTED_EXPIRATION_FIELDS)
+        market_id = str(
+            metadata.get("ticker") or metadata.get("market_ticker") or ""
+        ).strip()
+        event_id = str(metadata.get("event_ticker") or "").strip()
+        near_misses.append(
+            {
+                "market_id_hash": hashlib.sha256(market_id.encode("utf-8")).hexdigest()[:16]
+                if market_id
+                else None,
+                "event_id_hash": hashlib.sha256(event_id.encode("utf-8")).hexdigest()[:16]
+                if event_id
+                else None,
+                "primary_rejection_reason": reasons[0] if reasons else None,
+                "lifecycle_deadline_source": deadline_source,
+                "lifecycle_margin_seconds": margin,
+                "close_margin_seconds": int((close_time - required_end).total_seconds())
+                if close_time
+                else None,
+                "expected_expiration_margin_seconds": int(
+                    (expected_expiration - required_end).total_seconds()
+                )
+                if expected_expiration
+                else None,
+                "can_close_early": _as_bool(metadata.get("can_close_early")),
+                "event_category_class": (
+                    "sports" if _is_sports_market(metadata) else "non_sports"
+                ),
+                "match_like": _is_match_event(metadata),
+                "current_quote_indicator": _has_current_quote_indicator(metadata),
+            }
+        )
+    near_misses.sort(
+        key=lambda item: (
+            abs(item["lifecycle_margin_seconds"])
+            if isinstance(item["lifecycle_margin_seconds"], int)
+            else sys.maxsize,
+            str(item["market_id_hash"] or ""),
+        )
     )
+    return {
+        "rejection_counts": dict(sorted(rejection_counts.items())),
+        "multi_label_rejection_counts": dict(
+            sorted(multi_label_rejection_counts.items())
+        ),
+        "near_misses": near_misses[:DISCOVERY_NEAR_MISS_LIMIT],
+    }
 
 
 def _with_event_metadata(
@@ -1419,7 +1630,10 @@ def _market_discovery_blocker(
     rejection_counts: Mapping[str, int],
     cursor_remaining: bool = False,
     diagnostics: Mapping[str, object] | None = None,
+    multi_label_rejection_counts: Mapping[str, int] | None = None,
+    near_misses: list[dict[str, object]] | None = None,
 ) -> dict[str, object]:
+    detail = dict(diagnostics or {})
     return {
         "market_metadata": None,
         "selection": None,
@@ -1427,8 +1641,16 @@ def _market_discovery_blocker(
         "pages_fetched": pages_fetched,
         "markets_seen": markets_seen,
         "rejection_counts": dict(sorted(rejection_counts.items())),
+        "multi_label_rejection_counts": dict(
+            sorted((multi_label_rejection_counts or {}).items())
+        ),
+        "near_misses": list(near_misses or []),
         "cursor_remaining": cursor_remaining,
-        "diagnostics": dict(diagnostics or {}),
+        "coverage_complete": detail.get("coverage_complete") is True,
+        "eligible_count": 0,
+        "selection_profile_version": detail.get("selection_profile_version"),
+        "selection_profile_hash": detail.get("selection_profile_hash"),
+        "diagnostics": detail,
     }
 
 
@@ -1598,6 +1820,12 @@ def _default_lifecycle_record(
         "time_to_lifecycle_deadline_at_launch_seconds": None,
         "lifecycle_deadline": None,
         "selection_profile": profile.value,
+        "selection_profile_version": SELECTION_PROFILE_VERSION,
+        "selection_profile_hash": selection_profile_hash(
+            profile,
+            duration_seconds=duration_seconds,
+            safety_buffer_seconds=selection_safety_buffer_seconds(profile),
+        ),
         "selection_safety_buffer_seconds": selection_safety_buffer_seconds(profile),
         "selection_reason": "bounded_smoke",
         "selection_gate_result": "not_required",
@@ -1679,6 +1907,12 @@ def _market_lifecycle_record(
         "lifecycle_deadline": _time_text(lifecycle_deadline),
         "selection_reason": selection_reason,
         "selection_profile": selection_profile.value,
+        "selection_profile_version": SELECTION_PROFILE_VERSION,
+        "selection_profile_hash": selection_profile_hash(
+            selection_profile,
+            duration_seconds=duration_seconds,
+            safety_buffer_seconds=safety_buffer_seconds,
+        ),
         "selection_gate_result": result,
         "selection_gate_rejection_reason": reason,
         "selection_safety_buffer_seconds": safety_buffer_seconds,
