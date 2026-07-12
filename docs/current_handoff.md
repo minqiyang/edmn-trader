@@ -1705,20 +1705,20 @@ renamed, or noisy, use the equivalent checklist instead of debugging the skill.
 
 ## Next recommended action
 
-After D2E-F1 review, merge, merged-main verification, and Phase 0B software-only
-VPS refresh, stop. The next task may only be a separately owner-authorized
-post-fix Real5M. Do not reuse the consumed authorization or retry from this
-task.
+Complete D2E-F3 review, merge, merged-main verification, and the Phase 0B
+software-only VPS refresh before any network run. The active autonomous audit
+authorization then permits one bounded post-fix Real5M with no automatic retry;
+a second run is conditional on a repaired and re-reviewed deterministic defect.
 
 ## Exact next prompt suggestion
 
-Authorize one bounded post-D2E-F1 Real5M only after confirming the reviewed
-public commit and Phase 0B software-only VPS acceptance evidence. Keep Demo,
-read-only, raw-private, disabled-live-gate, and zero-submit boundaries.
+Continue the autonomous audit controller only after confirming the reviewed
+D2E-F3 public commit and Phase 0B software-only VPS acceptance evidence. Keep
+Demo, read-only, raw-private, disabled-live-gate, and zero-submit boundaries.
 
 ## Last updated timestamp
 
-2026-07-11 21:05:44 -07:00
+2026-07-12 13:45:00 -07:00
 
 ## Round 8G lifecycle gate v2 checkpoint
 
