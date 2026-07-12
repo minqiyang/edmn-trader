@@ -6,29 +6,32 @@ than `close_time` alone.
 ```text
 campaign_required_end = selected_at_utc + duration_seconds + safety_buffer_seconds
 lifecycle_deadline = min(close_time, expected_expiration_time,
-                         explicit_early_close_deadline, settlement_time)
+                         occurrence_datetime, explicit_early_close_deadline,
+                         settlement_time)
 ```
 
 `latest_expiration_time` is retained as metadata but is never the sole safety
 deadline. A market must be `open` or `trading`, and every applicable
 conservative deadline must exceed `campaign_required_end`.
 
-`occurrence_datetime` is retained as observational metadata, not as a future
-lifecycle deadline. Kalshi's changelog defines it as the recorded time when the
-underlying event occurred, when available. Treating that retrospective value as
-a future deadline falsely rejects otherwise valid markets. `close_time` can move
-earlier when `can_close_early=true`, while `expected_expiration_time` is the
-forecast time when the outcome should be known, so those fields remain
-conservative gates. See Kalshi's
+`occurrence_datetime` remains a conservative deadline because its current
+contract is unresolved. Kalshi's changelog defines it as the recorded time when
+the underlying event occurred, when available, but independent Demo
+revalidation returned a future value equal to `close_time` and
+`expected_expiration_time`. Until Kalshi clarifies that contradiction, the gate
+fails closed and does not interpret the field as purely retrospective.
+`close_time` can move earlier when `can_close_early=true`, while
+`expected_expiration_time` is the forecast time when the outcome should be
+known. See Kalshi's
 [market lifecycle](https://docs.kalshi.com/getting_started/market_lifecycle) and
 [April 16, 2026 changelog](https://docs.kalshi.com/changelog).
 
 The long-horizon gate rejects early-close markets without expected-expiration
-or explicit early-close deadline metadata, early expected expiration, missing
-event metadata, and sports/match markets unless an explicit future
-configuration allows that category. The manifest preserves the raw lifecycle
-fields, normalized status, event metadata, lifecycle deadline, required end,
-and structured rejection reason.
+or explicit early-close deadline metadata, early expected expiration or
+occurrence, missing event metadata, and sports/match markets unless an explicit
+future configuration allows that category. The manifest preserves the raw
+lifecycle fields, normalized status, event metadata, lifecycle deadline,
+required end, and structured rejection reason.
 
 Selection is explicit across three profiles. Smoke uses a 900-second buffer.
 The 1,800-second canary uses a 3,600-second buffer, requires complete event

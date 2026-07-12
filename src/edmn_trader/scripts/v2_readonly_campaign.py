@@ -56,7 +56,7 @@ MAX_MARKET_DISCOVERY_PAGES = 100
 EVENT_DISCOVERY_BATCH_SIZE = 50
 DISCOVERY_MAX_ATTEMPTS = 3
 DISCOVERY_NEAR_MISS_LIMIT = 100
-SELECTION_PROFILE_VERSION = "edmn.kalshi.selection_profile.v2"
+SELECTION_PROFILE_VERSION = "edmn.kalshi.selection_profile.v3"
 OPEN_MARKET_STATUSES = {"open", "trading"}
 MARKET_STATUS_REJECTION_REASONS = {
     "initialized": "MARKET_STATUS_UNOPENED",
@@ -86,6 +86,8 @@ CONSERVATIVE_LIFECYCLE_TIME_FIELDS = (
     "close_time",
     "expected_expiration_time",
     "expected_expiration",
+    "occurrence_datetime",
+    "occurrence_time",
     "early_close_deadline",
     "early_close_time",
     "settlement_time",
@@ -144,7 +146,7 @@ def selection_profile_hash(
         "duration_seconds": duration_seconds,
         "safety_buffer_seconds": safety_buffer_seconds,
         "conservative_lifecycle_time_fields": CONSERVATIVE_LIFECYCLE_TIME_FIELDS,
-        "observational_only_time_fields": OCCURRENCE_FIELDS,
+        "contract_ambiguous_conservative_time_fields": OCCURRENCE_FIELDS,
         "complete_event_metadata_required": profile is not SelectionProfile.SMOKE,
         "early_close_rule": (
             "reject_any"
@@ -266,6 +268,7 @@ def _market_selection_rejection_reasons(
         )
 
     expected_expiration = _first_metadata_time(market_metadata, *EXPECTED_EXPIRATION_FIELDS)
+    occurrence_time = _first_metadata_time(market_metadata, *OCCURRENCE_FIELDS)
     early_close_deadline = _first_metadata_time(market_metadata, *EARLY_CLOSE_DEADLINE_FIELDS)
     lifecycle_deadline = _earliest_metadata_time(
         market_metadata, *CONSERVATIVE_LIFECYCLE_TIME_FIELDS
@@ -277,6 +280,12 @@ def _market_selection_rejection_reasons(
         reasons.append("CAN_CLOSE_EARLY_UNSAFE_FOR_DURATION")
     if expected_expiration is not None and expected_expiration <= campaign_required_end:
         reasons.append("EXPECTED_EXPIRATION_TOO_SHORT")
+    if (
+        profile is not SelectionProfile.SMOKE
+        and occurrence_time is not None
+        and occurrence_time <= campaign_required_end
+    ):
+        reasons.append("EVENT_OCCURRENCE_TOO_EARLY")
     if lifecycle_deadline is None:
         reasons.append("MISSING_CLOSE_TIME")
     elif lifecycle_deadline <= campaign_required_end:
@@ -285,6 +294,7 @@ def _market_selection_rejection_reasons(
         elif (
             _parse_time(market_metadata.get("close_time")) == lifecycle_deadline
             and expected_expiration is None
+            and occurrence_time is None
             and early_close_deadline is None
         ):
             reasons.append("TIME_TO_CLOSE_TOO_SHORT")

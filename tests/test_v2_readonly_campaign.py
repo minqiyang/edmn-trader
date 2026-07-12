@@ -125,7 +125,7 @@ def test_market_selection_rejects_unsafe_early_close_without_expected_expiration
     assert result["selection_gate_rejection_reason"] == "CAN_CLOSE_EARLY_UNSAFE_FOR_DURATION"
 
 
-def test_market_selection_treats_occurrence_as_observed_metadata_not_deadline() -> None:
+def test_market_selection_keeps_occurrence_conservative_while_contract_is_ambiguous() -> None:
     result = evaluate_market_selection(
         _market_metadata(
             close_time="2026-07-20T00:00:00Z",
@@ -138,9 +138,9 @@ def test_market_selection_treats_occurrence_as_observed_metadata_not_deadline() 
         duration_seconds=SEVEN_DAY_SECONDS,
     )
 
-    assert result["selection_gate_result"] == "pass"
-    assert result["selection_gate_rejection_reason"] is None
-    assert result["lifecycle_deadline"] == "2026-07-20T00:00:00+00:00"
+    assert result["selection_gate_result"] == "reject"
+    assert result["selection_gate_rejection_reason"] == "EVENT_OCCURRENCE_TOO_EARLY"
+    assert result["lifecycle_deadline"] == "2026-07-02T00:00:00+00:00"
 
 
 def test_market_selection_accepts_all_conservative_deadlines_beyond_required_end() -> None:
@@ -159,7 +159,7 @@ def test_market_selection_accepts_all_conservative_deadlines_beyond_required_end
     )
 
     assert result["selection_gate_result"] == "pass"
-    assert result["lifecycle_deadline"] == "2026-07-19T00:00:00+00:00"
+    assert result["lifecycle_deadline"] == "2026-07-18T00:00:00+00:00"
 
 
 def test_short_smoke_accepts_sufficiently_long_short_lived_market() -> None:
@@ -492,7 +492,7 @@ def test_market_discovery_emits_complete_multilabel_profile_evidence() -> None:
         "EXPECTED_EXPIRATION_TOO_SHORT": 1,
         "SPORTS_UNSUITABLE_FOR_CANARY": 1,
     }
-    assert result["selection_profile_version"] == "edmn.kalshi.selection_profile.v2"
+    assert result["selection_profile_version"] == "edmn.kalshi.selection_profile.v3"
     assert len(result["selection_profile_hash"]) == 64
     assert result["near_misses"]
     assert "RISKY-MARKET" not in json.dumps(result["near_misses"])
@@ -1373,7 +1373,7 @@ def test_manifest_preserves_lifecycle_v2_fields(tmp_path: Path) -> None:
     assert manifest["can_close_early"] is True
     assert manifest["expected_expiration_time"] == "2026-07-19T00:00:00+00:00"
     assert manifest["occurrence_datetime"] == "2026-07-18T00:00:00+00:00"
-    assert manifest["lifecycle_deadline"] == "2026-07-19T00:00:00+00:00"
+    assert manifest["lifecycle_deadline"] == "2026-07-18T00:00:00+00:00"
     assert manifest["selection_gate_rejection_reason"] is None
 
 
