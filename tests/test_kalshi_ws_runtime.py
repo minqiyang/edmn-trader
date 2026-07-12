@@ -1483,6 +1483,72 @@ def test_validator_replay_rejects_self_declared_generation_jump() -> None:
         ws_runtime._replay_channel_binding(tampered, bindings, requests)
 
 
+def test_validator_replay_rejects_tampered_request_identity_annotations() -> None:
+    tracker = KalshiWsIntegrityTracker(
+        campaign_id="identity-annotations",
+        requested_market_tickers=(MARKET,),
+    )
+    tracker.start_connection()
+    request = replace(
+        tracker.bind_subscription(command_id=1, created_at_utc=START)[0],
+        send_outcome="SENT",
+    )
+    acknowledgment = tracker.record(
+        {
+            "type": "subscribed",
+            "id": 1,
+            "sid": 41,
+            "msg": {"channel": "orderbook_delta"},
+        },
+        local_row_index=1,
+        received_at_utc=START,
+        received_monotonic_ns=1,
+    )
+
+    for tampered in (
+        replace(acknowledgment, connection_epoch=2),
+        replace(acknowledgment, run_request_index=2),
+    ):
+        with pytest.raises(ValueError, match="unknown or stale acknowledgment"):
+            ws_runtime._replay_channel_binding(
+                tampered,
+                {},
+                {(request.connection_id, request.channel): request},
+            )
+
+
+def test_validator_rejects_duplicate_or_transitioned_send_outcome(tmp_path: Path) -> None:
+    session = _session(tmp_path, configured_duration_seconds=1)
+    summary = session.close(
+        ended_at_utc=START + timedelta(seconds=1),
+        terminal_reason="bounded_duration_complete",
+        stop_requested=False,
+        connection_established=True,
+        subscription_acknowledged=True,
+        blocker_code=None,
+    )
+    records = [
+        json.loads(line)
+        for segment in summary["segment_summaries"]
+        for line in (tmp_path / segment["data_path"]).read_text().splitlines()
+    ]
+    sent = next(
+        record
+        for record in records
+        if record["record_type"] == "subscription_request_evidence"
+        and record["subscription_request"]["send_outcome"] == "SENT"
+    )
+    terminal_index = next(
+        index
+        for index, record in enumerate(records)
+        if record["record_type"] == "runtime_terminal"
+    )
+    records.insert(terminal_index, sent)
+
+    with pytest.raises(ValueError, match="send outcome lacks matching pending request"):
+        ws_runtime._derive_runtime_validation(summary, records)
+
+
 def test_running_monitor_blocks_tampered_safety_scalars(tmp_path: Path) -> None:
     _session(tmp_path, configured_duration_seconds=300)
     summary_path = tmp_path / "campaign_summary.json"

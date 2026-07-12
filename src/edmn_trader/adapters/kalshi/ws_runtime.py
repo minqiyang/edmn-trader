@@ -2315,6 +2315,8 @@ def _replay_channel_binding(
             and envelope.request_id == request.native_command_id
             and event.subscription_command_id == request.native_command_id
             and event.subscription_generation == request.subscription_generation
+            and event.connection_epoch == request.connection_epoch
+            and event.run_request_index == request.run_request_index
         )
         if not request_matches:
             if event.subscription_binding_state is not SubscriptionBindingState.REQUEST_MISMATCH:
@@ -2347,6 +2349,8 @@ def _replay_channel_binding(
                 "generation": request.subscription_generation,
                 "request_id": request.native_command_id,
                 "connection_id": event.connection_id,
+                "connection_epoch": request.connection_epoch,
+                "run_request_index": request.run_request_index,
             }
             expected = SubscriptionBindingState.ACKNOWLEDGED
             expected_observation = SubscriptionBindingObservation.ACKNOWLEDGED
@@ -2361,6 +2365,8 @@ def _replay_channel_binding(
                 generation=request.subscription_generation,
                 request_id=request.native_command_id,
                 connection_id=event.connection_id,
+                connection_epoch=request.connection_epoch,
+                run_request_index=request.run_request_index,
             )
             expected = SubscriptionBindingState.ACKNOWLEDGED
             expected_observation = SubscriptionBindingObservation.ACKNOWLEDGED
@@ -2382,6 +2388,13 @@ def _replay_channel_binding(
         and binding["state"] is SubscriptionBindingState.ACKNOWLEDGED
         and binding["sid"] == envelope.sid
         and binding["generation"] == event.subscription_generation
+        and request is not None
+        and request.send_outcome == "SENT"
+        and event.subscription_command_id == request.native_command_id
+        and event.connection_epoch == request.connection_epoch
+        and event.run_request_index == request.run_request_index
+        and binding["connection_epoch"] == request.connection_epoch
+        and binding["run_request_index"] == request.run_request_index
     )
     if trusted:
         if event.subscription_binding_state is not SubscriptionBindingState.ACKNOWLEDGED:
@@ -2551,6 +2564,7 @@ def _derive_runtime_validation(
     durable_ack_channels: dict[str, set[str]] = {}
     validation_bindings: dict[str, dict[str, object]] = {}
     validation_requests: dict[tuple[str, str], SubscriptionRequestEvidence] = {}
+    requests_with_inbound_evidence: set[tuple[str, str]] = set()
     used_command_ids: set[int] = set()
     last_generation_by_channel: dict[str, int] = {}
     last_run_request_index = 0
@@ -2707,7 +2721,12 @@ def _derive_runtime_validation(
                 last_generation_by_channel[request.channel] = request.subscription_generation
                 last_run_request_index = request.run_request_index
             else:
-                if prior is None or replace(prior, send_outcome=request.send_outcome) != request:
+                if (
+                    prior is None
+                    or prior.send_outcome != "PENDING_SEND"
+                    or key in requests_with_inbound_evidence
+                    or replace(prior, send_outcome=request.send_outcome) != request
+                ):
                     raise ValueError("subscription send outcome lacks matching pending request")
                 validation_requests[key] = request
             continue
@@ -2724,6 +2743,9 @@ def _derive_runtime_validation(
         if event.local_row_index != counts["event_count"] + 1:
             raise ValueError("D2A local row indices must be contiguous across the runtime")
         _replay_channel_binding(event, validation_bindings, validation_requests)
+        request_key = (event.connection_id, event.channel)
+        if request_key in validation_requests:
+            requests_with_inbound_evidence.add(request_key)
         _validate_event_subscription_state(
             event,
             connection_states,

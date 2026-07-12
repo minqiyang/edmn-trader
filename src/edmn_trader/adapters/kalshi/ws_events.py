@@ -825,11 +825,13 @@ class KalshiWsIntegrityTracker:
             and binding is not None
             and native_type in {"error", "rejected"}
         ):
-            binding.state = (
+            event_binding_state = (
                 SubscriptionBindingState.REJECTED
                 if native_command_id == binding.command_id
                 else SubscriptionBindingState.REQUEST_MISMATCH
             )
+            if native_command_id == binding.command_id:
+                binding.state = SubscriptionBindingState.REJECTED
             binding_observation = SubscriptionBindingObservation.REJECTED
         native_seq = _native_identifier(payload, "seq")
         if (

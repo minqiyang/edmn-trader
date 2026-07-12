@@ -72,6 +72,31 @@ def test_reconnect_advances_run_request_and_channel_generation() -> None:
     assert second.run_request_index == first.run_request_index + 1
     assert second.subscription_generation == first.subscription_generation + 1
 
+
+def test_stale_error_does_not_mutate_current_acknowledged_binding() -> None:
+    tracker = _tracker()
+    stale = tracker.record(
+        {
+            "type": "error",
+            "id": 999,
+            "msg": {"channel": "orderbook_delta", "message": "stale"},
+        },
+        local_row_index=3,
+        received_at_utc=RECEIVED_AT,
+        received_monotonic_ns=3,
+    )
+    snapshot = _record(
+        tracker,
+        "orderbook_snapshot",
+        seq=1,
+        local_row_index=4,
+        sid=41,
+    )
+
+    assert stale.subscription_binding_state is SubscriptionBindingState.REQUEST_MISMATCH
+    assert snapshot.subscription_binding_state is SubscriptionBindingState.ACKNOWLEDGED
+    assert snapshot.admission_status is AdmissionStatus.ADMITTED
+
 RECEIVED_AT = datetime(2026, 7, 10, 1, 2, 3, tzinfo=UTC)
 
 
