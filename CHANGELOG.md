@@ -6,6 +6,12 @@ numbers while the repository is still in early research scaffolding.
 
 ## Unreleased
 
+- Aligned terminal validation with channel-scoped subscription timing. A public
+  orderbook or trade row may follow its own independently replayed channel ACK
+  before the other required public channel ACK arrives; unrelated and legacy
+  rows still require the combined connection acknowledgment. Pre-ACK and
+  mismatched channel data remain fail-closed. No production or order-write
+  behavior changed.
 - Bounded runtime market selection independently from complete discovery
   auditing. Smoke and campaign launches now stop after the requested eligible
   market count, cap logical orderbook probes at 100, and fail closed with an explicit

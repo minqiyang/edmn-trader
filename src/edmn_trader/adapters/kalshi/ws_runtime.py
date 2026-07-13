@@ -2212,9 +2212,14 @@ def _validate_event_subscription_state(
         "error",
         "rejected",
     }
+    channel_bound_public_data = require_channel_binding and not subscription_control and (
+        event.native_type in {"orderbook_snapshot", "orderbook_delta", "trade"}
+        or event.channel in REQUIRED_PUBLIC_CHANNELS
+    )
+    global_ack_required = not subscription_control and not channel_bound_public_data
     if not isinstance(opened_at, datetime) or event.received_at_utc < opened_at:
         raise ValueError("D2A event predates its connection open evidence")
-    if not subscription_control and (
+    if global_ack_required and (
         not isinstance(acknowledged_at, datetime)
         or event.received_at_utc < acknowledged_at
     ):
@@ -2224,10 +2229,14 @@ def _validate_event_subscription_state(
     last_event_at = state.get("last_event_at")
     if isinstance(last_event_at, datetime) and event.received_at_utc < last_event_at:
         raise ValueError("D2A event chronology moves backwards")
-    if not subscription_control and event.segment_boundary_reason in {
-        SegmentBoundaryReason.NEW_SUBSCRIPTION,
-        SegmentBoundaryReason.RESUBSCRIPTION,
-    } and event.segment_id != state.get("acknowledged_segment_id"):
+    if (
+        global_ack_required
+        and event.segment_boundary_reason in {
+            SegmentBoundaryReason.NEW_SUBSCRIPTION,
+            SegmentBoundaryReason.RESUBSCRIPTION,
+        }
+        and event.segment_id != state.get("acknowledged_segment_id")
+    ):
         raise ValueError("D2A subscription segment contradicts acknowledgment evidence")
     if require_channel_binding:
         _validate_channel_binding(event)
@@ -2348,6 +2357,7 @@ def _replay_channel_binding(
             and binding["sid"] == envelope.sid
             and binding["generation"] == request.subscription_generation
             and binding["request_id"] == request.native_command_id
+            and binding.get("segment_id") == event.segment_id
             and binding["state"] is SubscriptionBindingState.ACKNOWLEDGED
         )
         if exact_duplicate:
@@ -2366,6 +2376,7 @@ def _replay_channel_binding(
                 "connection_id": event.connection_id,
                 "connection_epoch": request.connection_epoch,
                 "run_request_index": request.run_request_index,
+                "segment_id": event.segment_id,
             }
             expected = SubscriptionBindingState.ACKNOWLEDGED
             expected_observation = SubscriptionBindingObservation.ACKNOWLEDGED
@@ -2382,6 +2393,7 @@ def _replay_channel_binding(
                 connection_id=event.connection_id,
                 connection_epoch=request.connection_epoch,
                 run_request_index=request.run_request_index,
+                segment_id=event.segment_id,
             )
             expected = SubscriptionBindingState.ACKNOWLEDGED
             expected_observation = SubscriptionBindingObservation.ACKNOWLEDGED
@@ -2472,6 +2484,7 @@ def _replay_channel_binding(
         and binding["state"] is SubscriptionBindingState.ACKNOWLEDGED
         and binding["sid"] == envelope.sid
         and binding["generation"] == event.subscription_generation
+        and binding.get("segment_id") == event.segment_id
         and request is not None
         and request.send_outcome == "SENT"
         and event.subscription_command_id == request.native_command_id

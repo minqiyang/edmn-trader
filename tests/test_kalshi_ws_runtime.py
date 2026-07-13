@@ -457,6 +457,69 @@ def test_actual_runtime_accepts_split_public_channel_acknowledgments(tmp_path: P
     assert validate_d2_runtime_artifacts(tmp_path / "run")["status"] == "pass"
 
 
+def test_actual_runtime_accepts_channel_data_before_other_channel_ack(
+    tmp_path: Path,
+) -> None:
+    fake_time = _FakeTime()
+    websocket = _FakeWebSocket(
+        [
+            {
+                "type": "subscribed",
+                "id": 1,
+                "sid": 11,
+                "msg": {"channel": "orderbook_delta"},
+            },
+            {
+                "type": "orderbook_snapshot",
+                "sid": 11,
+                "seq": 1,
+                "msg": {
+                    "market_ticker": MARKET,
+                    "yes_dollars_fp": [["0.42", "3"]],
+                    "no_dollars_fp": [],
+                },
+            },
+            {
+                "type": "subscribed",
+                "id": 2,
+                "sid": 22,
+                "msg": {"channel": "trade"},
+            },
+        ]
+    )
+
+    summary = run_d2_kalshi_ws_runtime(
+        output_dir=tmp_path / "run",
+        campaign_id="d2e-interleaved-channel-ack",
+        mode="read_only_websocket_smoke",
+        duration_seconds=300,
+        market_metadata={"ticker": MARKET, "status": "active"},
+        market_selection={"selection_gate_result": "pass"},
+        auth=KalshiWsAuthConfig(
+            api_key_id="fixture-id",
+            private_key_path=_private_key(tmp_path),
+        ),
+        provenance=RuntimeCodeProvenance(COMMIT, "main", "https://example.test/repo", False),
+        websocket_factory=lambda *_args, **_kwargs: websocket,
+        lifecycle_provider=lambda ticker: {"ticker": ticker, "status": "active"},
+        now=fake_time.now,
+        monotonic=fake_time.monotonic,
+        monotonic_ns=fake_time.monotonic_ns,
+    )
+    validation = json.loads(
+        (tmp_path / "run" / "campaign_validation.json").read_text(encoding="utf-8")
+    )
+
+    assert summary["event_count"] == 3
+    assert summary["snapshot_count"] == 1
+    assert summary["rebuild_frame_count"] == 1
+    assert summary["admitted_selected_snapshot_count"] == 1
+    assert validation["status"] == "pass"
+    assert validation["event_count"] == 3
+    assert validation["snapshot_count"] == 1
+    assert validation["rebuild_frame_count"] == 1
+
+
 @pytest.mark.parametrize(
     ("runner", "duration_seconds", "expected_profile"),
     [
@@ -1515,6 +1578,55 @@ def test_validator_replay_rejects_tampered_request_identity_annotations() -> Non
                 {},
                 {(request.connection_id, request.channel): request},
             )
+
+
+def test_validator_replay_requires_data_to_match_channel_ack_segment() -> None:
+    tracker = KalshiWsIntegrityTracker(
+        campaign_id="channel-segment-replay",
+        requested_market_tickers=(MARKET,),
+    )
+    tracker.start_connection()
+    request = replace(
+        tracker.bind_subscription(command_id=1, created_at_utc=START)[0],
+        send_outcome="SENT",
+    )
+    acknowledgment = tracker.record(
+        {
+            "type": "subscribed",
+            "id": 1,
+            "sid": 41,
+            "msg": {"channel": "orderbook_delta"},
+        },
+        local_row_index=1,
+        received_at_utc=START,
+        received_monotonic_ns=1,
+    )
+    snapshot = tracker.record(
+        {
+            "type": "orderbook_snapshot",
+            "sid": 41,
+            "seq": 1,
+            "msg": {
+                "market_ticker": MARKET,
+                "yes_dollars_fp": [["0.42", "3"]],
+                "no_dollars_fp": [],
+            },
+        },
+        local_row_index=2,
+        received_at_utc=START,
+        received_monotonic_ns=2,
+    )
+    requests = {(request.connection_id, request.channel): request}
+    bindings: dict[object, dict[str, object]] = {}
+
+    ws_runtime._replay_channel_binding(acknowledgment, bindings, requests)
+    ws_runtime._replay_channel_binding(snapshot, bindings, requests)
+    with pytest.raises(ValueError, match="untrusted D2A data"):
+        ws_runtime._replay_channel_binding(
+            replace(snapshot, segment_id="channel-segment-replay:segment:9999"),
+            bindings,
+            requests,
+        )
 
 
 def test_validator_replays_exact_and_stale_rejections_independently() -> None:

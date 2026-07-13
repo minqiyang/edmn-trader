@@ -1,5 +1,28 @@
 # Current Handoff
 
+## Channel ACK interleaving validator correction
+
+The second and final audit-owned Real5M observed the valid sequence
+`orderbook ACK -> orderbook snapshot -> trade ACK`. Runtime admitted the
+snapshot using its acknowledged orderbook binding, but terminal validation
+still required the later connection-level acknowledgment that represents all
+required public channels. It therefore failed with `D2A event was recorded
+before subscription acknowledgment` despite durable order showing the
+orderbook ACK first.
+
+For the channel-scoped identity model, validator chronology now allows public
+orderbook/trade data after that row's own independently replayed channel ACK,
+even if another required channel remains pending. `_validate_channel_binding`
+still requires exact connection/channel/generation/request/SID identity and an
+acknowledged binding. Heartbeats, unrelated data, and legacy identity continue
+to require the combined connection acknowledgment, so pre-ACK data remains
+fail-closed.
+
+The Real5M budget is exhausted at `2/2`; this correction cannot authorize a
+third network run. The next gate is review, merge, merged-main verification,
+and exact VPS deployment of the offline repair, followed by a mandatory stop
+before discovery, measurement, replay qualification, or Phase 0C.
+
 ## Real5M runtime-selection bound
 
 The first post-D2E Real5M attempt exposed a deterministic pre-runtime defect:
@@ -1771,7 +1794,7 @@ boundaries.
 
 ## Last updated timestamp
 
-2026-07-12 17:37:11 -07:00
+2026-07-12 18:18:00 -07:00
 
 ## Round 8G lifecycle gate v2 checkpoint
 
