@@ -1722,3 +1722,23 @@ discovery audits remain exhaustive by default. Synthetic tests cover early
 selection, cap exhaustion, and smoke-call parameter propagation. No endpoint,
 credential, retry, live-gate, production, account, or order-write behavior
 changed.
+
+## Channel ACK interleaving validator correction
+
+The final authorized Real5M produced durable orderbook ACK, snapshot, and trade
+ACK rows in that order. Runtime correctly admitted and rebuilt the snapshot
+from its acknowledged orderbook channel binding. Independent validation replay
+also reproduced that binding, but then applied the older connection-level gate
+whose timestamp is emitted only after every required public channel is
+acknowledged. The same valid snapshot was consequently rejected as globally
+pre-ACK.
+
+Validation now distinguishes channel-bound public data from unrelated and
+legacy rows. For the v2 channel-scoped identity model, orderbook/trade data can
+precede the combined acknowledgment only after independent replay and strict
+binding validation prove that exact row's own channel ACK. The combined gate
+still applies to non-channel-bound rows, and existing pre-ACK tests remain
+fail-closed. A mocked runtime regression reproduces the live ordering and
+requires terminal validation to preserve the snapshot and rebuild frame. No
+network budget, production, credential, account, or order-write behavior is
+added.

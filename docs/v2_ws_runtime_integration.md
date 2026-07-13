@@ -165,8 +165,12 @@ Validator subscription evidence is ordered and connection-bound for every D2A
 row, and D2A transport indices must remain globally contiguous. A durable
 callback failure terminates the recorder instead of entering reconnect logic.
 Subscription control frames may precede the combined public-channel
-acknowledgment; data frames may not. Connection identities are unique and all
-connection windows must fit without overlap inside terminal timing boundaries.
+acknowledgment. A public orderbook or trade frame may follow its own trusted,
+independently replayed channel ACK before the other required public channel is
+acknowledged; it may not precede its own channel binding. Non-channel-bound and
+legacy data still require the combined connection acknowledgment. Connection
+identities are unique and all connection windows must fit without overlap
+inside terminal timing boundaries.
 Terminal validation and recovery stream D2A rows through bounded accumulators;
 the 100,000-event runtime gate stays below the declared 64 MiB peak. A missing
 selected-market orderbook observation is `UNKNOWN_NOT_OBSERVED`, never `FRESH`.
