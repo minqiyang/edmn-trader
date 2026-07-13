@@ -53,7 +53,22 @@ SMOKE_SELECTION_SAFETY_BUFFER_SECONDS = 900
 CANARY_SELECTION_SAFETY_BUFFER_SECONDS = 3_600
 MARKET_DISCOVERY_PAGE_LIMIT = 1_000
 MAX_MARKET_DISCOVERY_PAGES = 100
-EVENT_DISCOVERY_BATCH_SIZE = 50
+EVENT_DISCOVERY_PAGE_LIMIT = 200
+MAX_EVENT_DISCOVERY_PAGES = 100
+MAX_EVENT_FALLBACK_REQUESTS = 100
+DISCOVERY_PROTOCOL_VERSION = "edmn.kalshi.discovery_protocol.v1"
+DISCOVERY_SELECTION_DIAGNOSTIC_FIELDS = {
+    "market_discovery_protocol_version": "discovery_protocol_version",
+    "market_discovery_event_page_requests": "event_page_requests",
+    "market_discovery_event_pages_completed": "event_pages_completed",
+    "market_discovery_event_pagination_complete": "event_pagination_complete",
+    "market_discovery_event_fallback_requests": "single_event_fallback_requests",
+    "market_discovery_max_event_fallback_requests": "max_event_fallback_requests",
+    "market_discovery_event_fallback_limit_reached": (
+        "event_fallback_request_limit_reached"
+    ),
+    "market_discovery_market_mve_filter": "market_mve_filter",
+}
 DISCOVERY_MAX_ATTEMPTS = 3
 DISCOVERY_NEAR_MISS_LIMIT = 100
 RUNTIME_MARKET_SELECTION_MAX_ORDERBOOK_PROBES = 100
@@ -222,7 +237,18 @@ def _blocked_ws_selection_record(
             if source_key in source
         }
     )
+    record.update(_discovery_selection_diagnostics(diagnostics))
     return record
+
+
+def _discovery_selection_diagnostics(
+    diagnostics: Mapping[str, object],
+) -> dict[str, object]:
+    return {
+        output_key: diagnostics[source_key]
+        for output_key, source_key in DISCOVERY_SELECTION_DIAGNOSTIC_FIELDS.items()
+        if source_key in diagnostics
+    }
 
 
 def evaluate_market_selection(
@@ -1371,6 +1397,8 @@ def discover_kalshi_demo_ws_market(
     selected_at_utc: datetime,
     client: KalshiDemoMarketDataClient | None = None,
     max_pages: int = MAX_MARKET_DISCOVERY_PAGES,
+    max_event_pages: int = MAX_EVENT_DISCOVERY_PAGES,
+    max_event_fallback_requests: int = MAX_EVENT_FALLBACK_REQUESTS,
     selection_profile: SelectionProfile | str | None = None,
     eligible_market_limit: int | None = None,
     max_orderbook_probes: int | None = None,
@@ -1379,6 +1407,10 @@ def discover_kalshi_demo_ws_market(
 
     if max_pages < 1:
         raise ValueError("max_pages must be at least 1")
+    if max_event_pages < 1:
+        raise ValueError("max_event_pages must be at least 1")
+    if max_event_fallback_requests < 1:
+        raise ValueError("max_event_fallback_requests must be at least 1")
     if eligible_market_limit is not None and eligible_market_limit < 1:
         raise ValueError("eligible_market_limit must be at least 1")
     if max_orderbook_probes is not None and max_orderbook_probes < 1:
@@ -1390,7 +1422,18 @@ def discover_kalshi_demo_ws_market(
     pages_fetched = 0
     diagnostics: dict[str, Any] = {
         "coverage_complete": False,
-        "event_batch_requests": 0,
+        "event_page_requests": 0,
+        "event_pages_completed": 0,
+        "event_final_cursor_empty": False,
+        "event_pagination_complete": False,
+        "event_metadata_source": "documented_open_event_pagination_with_exact_fallback",
+        "discovery_protocol_version": DISCOVERY_PROTOCOL_VERSION,
+        "event_page_limit": EVENT_DISCOVERY_PAGE_LIMIT,
+        "max_event_pages": max_event_pages,
+        "event_status_filter": "open",
+        "market_mve_filter": "exclude",
+        "max_event_fallback_requests": max_event_fallback_requests,
+        "event_fallback_request_limit_reached": False,
         "single_event_fallback_requests": 0,
         "orderbook_requests": 0,
         "retry_count": 0,
@@ -1428,6 +1471,7 @@ def discover_kalshi_demo_ws_market(
                     limit=MARKET_DISCOVERY_PAGE_LIMIT,
                     cursor=cursor,
                     status="open",
+                    mve_filter="exclude",
                 ),
                 diagnostics,
             )
@@ -1483,19 +1527,26 @@ def discover_kalshi_demo_ws_market(
 
         event_cache: dict[str, Mapping[str, object]] = {}
         if require_event_metadata:
-            event_tickers = sorted(
+            requested_event_tickers = sorted(
                 {
                     str(market.get("event_ticker"))
                     for market in normalized_markets
                     if market.get("event_ticker")
                 }
             )
-            diagnostics["unique_event_tickers"] = len(event_tickers)
-            for start in range(0, len(event_tickers), EVENT_DISCOVERY_BATCH_SIZE):
-                chunk = tuple(event_tickers[start : start + EVENT_DISCOVERY_BATCH_SIZE])
-                diagnostics["event_batch_requests"] += 1
+            requested_event_ticker_set = set(requested_event_tickers)
+            diagnostics["unique_event_tickers"] = len(requested_event_tickers)
+            event_cursor: str | None = None
+            raw_event_count = 0
+            duplicate_event_count = 0
+            for _ in range(max_event_pages):
+                diagnostics["event_page_requests"] += 1
                 payload, error = _discovery_request(
-                    lambda chunk=chunk: active_client.list_events(tickers=chunk),
+                    lambda event_cursor=event_cursor: active_client.list_events(
+                        limit=EVENT_DISCOVERY_PAGE_LIMIT,
+                        cursor=event_cursor,
+                        status="open",
+                    ),
                     diagnostics,
                 )
                 if error or not isinstance(payload, Mapping):
@@ -1507,17 +1558,73 @@ def discover_kalshi_demo_ws_market(
                         cursor_remaining=bool(cursor),
                         diagnostics={**diagnostics, "pages_attempted": pages_attempted},
                     )
+                diagnostics["event_pages_completed"] += 1
                 for event in payload.get("events", []):
                     if isinstance(event, Mapping) and event.get("event_ticker"):
-                        event_cache[str(event["event_ticker"])] = event
+                        raw_event_count += 1
+                        event_ticker = str(event["event_ticker"])
+                        if event_ticker in event_cache:
+                            duplicate_event_count += 1
+                        if event_ticker in requested_event_ticker_set:
+                            event_cache[event_ticker] = event
 
-            missing = [ticker for ticker in event_tickers if ticker not in event_cache]
+                next_event_cursor = payload.get("cursor")
+                event_cursor = (
+                    next_event_cursor
+                    if isinstance(next_event_cursor, str) and next_event_cursor
+                    else None
+                )
+                if event_cursor is None:
+                    break
+
+            diagnostics.update(
+                {
+                    "raw_event_count": raw_event_count,
+                    "matched_event_count": len(event_cache),
+                    "duplicate_event_count": duplicate_event_count,
+                    "event_final_cursor_empty": event_cursor is None,
+                    "event_pagination_complete": event_cursor is None,
+                    "event_max_pages_reached": event_cursor is not None,
+                }
+            )
+            if event_cursor is not None:
+                return _market_discovery_blocker(
+                    "DEMO_EVENT_DISCOVERY_INCOMPLETE_PAGE_LIMIT",
+                    pages_fetched=pages_fetched,
+                    markets_seen=len(normalized_markets),
+                    rejection_counts={},
+                    cursor_remaining=False,
+                    diagnostics={**diagnostics, "pages_attempted": pages_attempted},
+                )
+
+            missing = [
+                ticker
+                for ticker in requested_event_tickers
+                if ticker not in event_cache
+            ]
+            diagnostics["missing_event_ticker_count"] = len(missing)
             for ticker in missing:
+                if (
+                    diagnostics["single_event_fallback_requests"]
+                    >= max_event_fallback_requests
+                ):
+                    diagnostics["event_fallback_request_limit_reached"] = True
+                    return _market_discovery_blocker(
+                        "DEMO_EVENT_DISCOVERY_FALLBACK_LIMIT",
+                        pages_fetched=pages_fetched,
+                        markets_seen=len(normalized_markets),
+                        rejection_counts={},
+                        cursor_remaining=False,
+                        diagnostics={
+                            **diagnostics,
+                            "pages_attempted": pages_attempted,
+                        },
+                    )
                 diagnostics["single_event_fallback_requests"] += 1
                 event, error = _discovery_request(
                     lambda ticker=ticker: active_client.get_event(ticker), diagnostics
                 )
-                if error == "HTTP_404":
+                if error in {"HTTP_404", "RESPONSE_SCHEMA_ERROR"}:
                     diagnostics["candidate_local_failure_count"] += 1
                     continue
                 if error or not isinstance(event, Mapping):
@@ -1632,6 +1739,7 @@ def discover_kalshi_demo_ws_market(
                     selected_at_utc=selected_at_utc,
                     duration_seconds=duration_seconds,
                     safety_buffer_seconds=safety_buffer_seconds,
+                    selection_profile=profile,
                 )
                 diagnostics.update(
                     {
@@ -1699,6 +1807,7 @@ def discover_kalshi_demo_ws_market(
             selected_at_utc=selected_at_utc,
             duration_seconds=duration_seconds,
             safety_buffer_seconds=safety_buffer_seconds,
+            selection_profile=profile,
         )
         diagnostics.update(
             {
@@ -1745,6 +1854,7 @@ def discover_kalshi_demo_ws_market(
                 "market_discovery_eligible_market_limit": eligible_market_limit,
                 "market_discovery_max_orderbook_probes": max_orderbook_probes,
                 "market_discovery_orderbook_probe_limit_reached": False,
+                **_discovery_selection_diagnostics(diagnostics),
             }
             return {
                 "market_metadata": selected_metadata,
@@ -1817,6 +1927,7 @@ def _discovery_audit_summary(
     selected_at_utc: datetime,
     duration_seconds: int,
     safety_buffer_seconds: int,
+    selection_profile: SelectionProfile,
 ) -> dict[str, Any]:
     rejection_counts: Counter[str] = Counter()
     multi_label_rejection_counts: Counter[str] = Counter()
@@ -1828,7 +1939,7 @@ def _discovery_audit_summary(
     required_end = selected_at_utc + timedelta(
         seconds=duration_seconds + safety_buffer_seconds
     )
-    profile = selection_profile_for_duration(duration_seconds)
+    profile = selection_profile
     for metadata, reasons in rows:
         if reasons:
             rejection_counts[reasons[0]] += 1

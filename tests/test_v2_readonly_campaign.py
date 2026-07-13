@@ -830,35 +830,36 @@ def test_market_discovery_deduplicates_event_hydration_for_shared_events() -> No
 
     assert result["blocker_code"] is None
     assert result["diagnostics"]["unique_event_tickers"] == 1
-    assert result["diagnostics"]["event_batch_requests"] == 1
+    assert result["diagnostics"]["event_page_requests"] == 1
+    assert result["diagnostics"]["event_pagination_complete"] is True
     assert sum(request.url.path.endswith("/events") for request in requests) == 1
 
 
-def test_market_discovery_batches_distinct_event_tickers() -> None:
+def test_market_discovery_exhausts_documented_open_event_pagination() -> None:
     markets = [
-        _market_metadata(ticker=f"DEMO-{index}-MARKET", event_ticker=f"DEMO-{index}")
-        for index in range(120)
+        _market_metadata(ticker="DEMO-A-MARKET", event_ticker="DEMO-A"),
+        _market_metadata(ticker="DEMO-B-MARKET", event_ticker="DEMO-B"),
     ]
-    batch_sizes: list[int] = []
+    event_cursors: list[str | None] = []
+    market_mve_filters: list[str | None] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path.endswith("/markets"):
+            market_mve_filters.append(request.url.params.get("mve_filter"))
             return httpx.Response(200, json={"markets": markets, "cursor": ""})
         if request.url.path.endswith("/events"):
-            tickers = request.url.params["tickers"].split(",")
-            batch_sizes.append(len(tickers))
+            cursor = request.url.params.get("cursor")
+            event_cursors.append(cursor)
+            ticker = "DEMO-B" if cursor else "DEMO-A"
             return httpx.Response(
                 200,
                 json={
-                    "events": [
-                        {
-                            "event_ticker": ticker,
-                            "category": "Finance",
-                            "title": "Long-horizon finance event",
-                        }
-                        for ticker in tickers
-                    ],
-                    "cursor": "",
+                    "events": [{
+                        "event_ticker": ticker,
+                        "category": "Finance",
+                        "title": "Long-horizon finance event",
+                    }],
+                    "cursor": "" if cursor else "event-page-2",
                 },
             )
         return httpx.Response(
@@ -874,8 +875,86 @@ def test_market_discovery_batches_distinct_event_tickers() -> None:
     )
 
     assert result["blocker_code"] is None
-    assert batch_sizes == [50, 50, 20]
-    assert result["diagnostics"]["event_batch_requests"] == 3
+    assert event_cursors == [None, "event-page-2"]
+    assert market_mve_filters == ["exclude"]
+    assert result["diagnostics"]["event_page_requests"] == 2
+    assert result["diagnostics"]["event_pages_completed"] == 2
+    assert result["diagnostics"]["event_final_cursor_empty"] is True
+    assert result["diagnostics"]["event_pagination_complete"] is True
+    assert result["diagnostics"]["single_event_fallback_requests"] == 0
+    assert (
+        result["diagnostics"]["discovery_protocol_version"]
+        == "edmn.kalshi.discovery_protocol.v1"
+    )
+    assert (
+        result["selection"]["market_discovery_protocol_version"]
+        == "edmn.kalshi.discovery_protocol.v1"
+    )
+    assert result["selection"]["market_discovery_event_pages_completed"] == 2
+    assert result["selection"]["market_discovery_event_pagination_complete"] is True
+    assert result["selection"]["market_discovery_event_fallback_requests"] == 0
+    assert result["selection"]["market_discovery_market_mve_filter"] == "exclude"
+
+
+def test_market_discovery_fails_closed_at_event_page_limit() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/markets"):
+            return httpx.Response(
+                200,
+                json={"markets": [_market_metadata()], "cursor": ""},
+            )
+        if request.url.path.endswith("/events"):
+            return httpx.Response(
+                200,
+                json={"events": [], "cursor": "more-events"},
+            )
+        raise AssertionError(f"unexpected request: {request.url.path}")
+
+    result = discover_kalshi_demo_ws_market(
+        duration_seconds=CANARY_SECONDS,
+        safety_buffer_seconds=CANARY_SELECTION_SAFETY_BUFFER_SECONDS,
+        selected_at_utc=NOW,
+        client=_market_discovery_client(handler),
+        max_event_pages=2,
+    )
+
+    assert result["blocker_code"] == "DEMO_EVENT_DISCOVERY_INCOMPLETE_PAGE_LIMIT"
+    assert result["diagnostics"]["event_pages_completed"] == 2
+    assert result["diagnostics"]["event_final_cursor_empty"] is False
+    assert result["diagnostics"]["event_pagination_complete"] is False
+
+
+def test_market_discovery_fails_closed_at_exact_event_fallback_limit() -> None:
+    markets = [
+        _market_metadata(ticker="DEMO-A-MARKET", event_ticker="DEMO-A"),
+        _market_metadata(ticker="DEMO-B-MARKET", event_ticker="DEMO-B"),
+    ]
+    exact_event_requests = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal exact_event_requests
+        if request.url.path.endswith("/markets"):
+            return httpx.Response(200, json={"markets": markets, "cursor": ""})
+        if request.url.path.endswith("/events"):
+            return httpx.Response(200, json={"events": [], "cursor": ""})
+        if "/events/" in request.url.path:
+            exact_event_requests += 1
+            return httpx.Response(404, json={"code": "not_found"})
+        raise AssertionError(f"unexpected request: {request.url.path}")
+
+    result = discover_kalshi_demo_ws_market(
+        duration_seconds=CANARY_SECONDS,
+        safety_buffer_seconds=CANARY_SELECTION_SAFETY_BUFFER_SECONDS,
+        selected_at_utc=NOW,
+        client=_market_discovery_client(handler),
+        max_event_fallback_requests=1,
+    )
+
+    assert result["blocker_code"] == "DEMO_EVENT_DISCOVERY_FALLBACK_LIMIT"
+    assert exact_event_requests == 1
+    assert result["diagnostics"]["single_event_fallback_requests"] == 1
+    assert result["diagnostics"]["event_fallback_request_limit_reached"] is True
+    assert result["diagnostics"]["coverage_complete"] is False
 
 
 def test_market_discovery_retries_429_with_a_bounded_attempt_count(
@@ -971,7 +1050,10 @@ def test_market_discovery_http_retry_policy_is_bounded(
     assert result["diagnostics"]["http_status_counts"][str(status)] == expected_attempts
 
 
-def test_missing_batched_event_uses_candidate_local_single_fallback() -> None:
+@pytest.mark.parametrize("fallback_failure", ("not_found", "schema"))
+def test_missing_paginated_event_uses_candidate_local_single_fallback(
+    fallback_failure: str,
+) -> None:
     markets = [
         _market_metadata(ticker="GOOD-MARKET", event_ticker="GOOD-EVENT"),
         _market_metadata(ticker="MISSING-MARKET", event_ticker="MISSING-EVENT"),
@@ -993,7 +1075,9 @@ def test_missing_batched_event_uses_candidate_local_single_fallback() -> None:
                 },
             )
         if request.url.path.endswith("/events/MISSING-EVENT"):
-            return httpx.Response(404, json={"code": "not_found"})
+            if fallback_failure == "not_found":
+                return httpx.Response(404, json={"code": "not_found"})
+            return httpx.Response(200, json={"unexpected": []})
         return httpx.Response(
             200,
             json={"orderbook_fp": {"yes_dollars": [["0.4000", "2.00"]], "no_dollars": []}},
@@ -1410,6 +1494,14 @@ def test_kalshi_ws_runtime_bounds_market_selection_requests(
             "coverage_complete": True,
             "eligible_count": 0,
             "diagnostics": {
+                "discovery_protocol_version": "edmn.kalshi.discovery_protocol.v1",
+                "event_page_requests": 2,
+                "event_pages_completed": 2,
+                "event_pagination_complete": True,
+                "single_event_fallback_requests": 1,
+                "max_event_fallback_requests": 100,
+                "event_fallback_request_limit_reached": False,
+                "market_mve_filter": "exclude",
                 "orderbook_requests": 100,
                 "orderbook_candidate_count": 1000,
                 "orderbook_candidate_scan_complete": False,
@@ -1447,6 +1539,17 @@ def test_kalshi_ws_runtime_bounds_market_selection_requests(
     assert selection["market_discovery_eligible_count_is_lower_bound"] is True
     assert selection["market_discovery_eligible_market_limit"] == 1
     assert selection["market_discovery_max_orderbook_probes"] == 100
+    assert (
+        selection["market_discovery_protocol_version"]
+        == "edmn.kalshi.discovery_protocol.v1"
+    )
+    assert selection["market_discovery_event_page_requests"] == 2
+    assert selection["market_discovery_event_pages_completed"] == 2
+    assert selection["market_discovery_event_pagination_complete"] is True
+    assert selection["market_discovery_event_fallback_requests"] == 1
+    assert selection["market_discovery_max_event_fallback_requests"] == 100
+    assert selection["market_discovery_event_fallback_limit_reached"] is False
+    assert selection["market_discovery_market_mve_filter"] == "exclude"
     assert selection["market_discovery_orderbook_probe_limit_reached"] is True
 
 
